@@ -47,12 +47,36 @@ function fiction_closing_element() {
 }
 
 function str() {
-  fiction_sanitize_html "$@\n"
+  fiction_sanitize_html "$@"
 }
 
 function @wrapper() {
   [ -z "$(declare -F "$1")" ] && return
   eval "$(declare -f "$1" | sed "s+{@children};+}; /${1}(){+g")"
+}
+
+function @cache() {
+  [ -z "$(declare -F "$1")" ] && return
+  while declare -f "$1" | grep -q "{cache}"; do
+
+    local CACHEBLOCK_BEGIN=0
+    local CACHEBLOCK_END=0
+    local linenum=1
+    while IFS= read -r line; do
+      if [[ "$line" == *"{cache};"* ]]; then
+        CACHEBLOCK_BEGIN="$((linenum + 1))"
+        continue
+      elif [[ "$line" == *"{/cache}"* ]]; then
+        CACHEBLOCK_END="$linenum"
+        break
+      fi
+
+      linenum=$((linenum + 1))
+    done <<<"$(declare -f "$1")"
+
+    CACHE_DATA="echo \"$(eval $(declare -f "$1" | sed -n "${CACHEBLOCK_BEGIN},${CACHEBLOCK_END}p") | sed 's+"+\\\\"+g')\""
+    eval "$(declare -f "$1" | awk -v start="$(($CACHEBLOCK_BEGIN - 1))" -v end="$(($CACHEBLOCK_END + 1))" -v r="$CACHE_DATA" 'NR < start { print; next } NR == start { split(r, a, "\n"); for (i in a) print a[i]; next } NR > end')"
+  done
 }
 
 function import() {
