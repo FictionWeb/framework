@@ -18,7 +18,7 @@ function fiction_sanitize_html() {
   #string="${string//>/&gt;}"
   #string="${string//\"/&quot;}"
   #string="${string//\'/&#39;}"
- # printf "$string"
+  # printf "$string"
 }
 
 # Handler
@@ -44,7 +44,7 @@ function fiction_element() {
 }
 
 function fiction_closing_element() {
-  echo -e "</${1}>"
+  echo -ne "</${1}>"
 }
 
 function str() {
@@ -75,9 +75,21 @@ function @cache() {
       linenum=$((linenum + 1))
     done <<<"$(declare -f "$1")"
 
-    CACHE_DATA="echo \"$(eval $(declare -f "$1" | sed -n "${CACHEBLOCK_BEGIN},${CACHEBLOCK_END}p") | sed 's+"+\\\\"+g')\""
+    local CACHE_DATA="echo \"$(eval $(declare -f "$1" | sed -n "${CACHEBLOCK_BEGIN},${CACHEBLOCK_END}p") | sed 's+"+\\\\"+g')\""
     eval "$(declare -f "$1" | awk -v start="$(($CACHEBLOCK_BEGIN - 1))" -v end="$(($CACHEBLOCK_END + 1))" -v r="$CACHE_DATA" 'NR < start { print; next } NR == start { split(r, a, "\n"); for (i in a) print a[i]; next } NR > end')"
   done
+}
+
+function @prerender {
+  [ -z "$(declare -F "$1")" ] && return
+  @cache "$1" # just in case
+  local PRERENDER_DATA="$1(){ echo \"$(eval "$1" | sed 's+"+\\"+g')\"; }"
+  eval "$PRERENDER_DATA"
+  if [ -n "$(declare -F "\\$1")" ]; then
+    @cache "\\$1" # just in case
+    PRERENDER_DATA="\\$1(){ echo \"$(eval "\\$1" | sed 's+"+\\"+g')\"; }"
+    eval "$PRERENDER_DATA"
+  fi
 }
 
 function import() {
