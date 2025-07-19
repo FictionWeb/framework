@@ -559,7 +559,7 @@ main() {
       done
       kill -9 "$_pid"
   else
-    while :; do
+  #  while :; do
     if [[ ! -d "$serverTmpDir" || -z "$serverTmpDir" ]]; then
       export serverTmpDir="$(mktemp -d)"
       TMPDIR="$serverTmpDir"
@@ -579,7 +579,7 @@ main() {
       rm -rf "$serverTmpDir"
      
     _pid="$!"
-  done
+  #done
 fi
 }
 
