@@ -4,43 +4,78 @@
 FICTION_HTML_ELEMENTS="h1 h2 h3 h4 h5 h6 p a img ul ol li div span table tr td th thead tbody tfoot form input textarea button option label br hr em strong i b u s sub sup code pre blockquote article section nav header footer aside main details summary dialog figure figcaption audio video track canvas svg iframe object embed param meta link script style title base head body html doctype noscript template slot picture srcset map area tracktime datalist fieldset legend output progress meter menu command keygen mark ruby rt rp wbr bdi bdo abbr address cite dfn ins del kbd samp var" # thanks gemini
 
 # Http Server
-FICTION_HTTP_ERROR_BEGIN="<title>Error!!!</title><center><h1>Fiction Web Server</h1><hr>"
+FICTION_HTTP_ERROR_BEGIN="<title>Error</title><center><h1>Fiction Web Server</h1><hr>"
 FICTION_HTTP_ERROR_END="</center>"
+serverTmpDir="$(mktemp -d)"
 
 # Helper functions
 function fiction_sanitize_html() {
   # https://stackoverflow.com/a/12873723
-  echo -n "$@" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g; s/'"'"'/\&#39;/g'
+  [[ ! "$@" =~ '%'|'<'|'>'|\"|\' ]] && printf "$@" && return 
+  local string="${@//%/%amp;}";
+  string="${string//</&lt;}"
+  string="${string//>/&gt;}"
+  string="${string//\"/&quot;}"
+  string="${string//\'/&#39;}"
+  printf "$string"
 }
 
 # Handler
+
 function fiction_element() {
-  echo -n "<${1}"
-  shift
-  for arg in "$@"; do
-    echo -n " " # very necessary
-    if [[ "$arg" == *"="* ]]; then
-      # Do sanitization
-      IFS='=' read -r key value <<<"$arg"
-      fiction_sanitize_html "$key=" # by html standards, key musn't have quotes
+  STDOUT=`readlink -f /proc/$$/fd/1`
+  if [ -d "$serverTmpDir/wrappers/" ]; then 
+    file=($serverTmpDir/wrappers/*)
+    exec >"$file"
+  fi
+    echo -n "<${1}"
+    shift
+    for arg in "$@"; do
+      echo -n " " # very necessary
+      if [[ "$arg" == *"="* ]]; then
+        # Do sanitization
+        IFS='=' read -r key value <<<"$arg"
+        fiction_sanitize_html "$key=" # by html standards, key musn't have quotes
 
-      echo -n "\"$(fiction_sanitize_html "$value")\"" # Add quotes bc why not
-    else
-      fiction_sanitize_html "$arg"
-    fi
-  done
-
+        echo -n '"'
+        fiction_sanitize_html "$value"
+        echo -n '"' # Add quotes bc why not
+      else
+        fiction_sanitize_html "$arg"
+      fi
+    done
   echo -ne ">"
 }
 
-function fiction_closing_element() {
-  echo -ne "</${1}>"
+function / {
+  if [ -f "$serverTmpDir/wrappers/$1" ]; then
+    local output=$(cat "$serverTmpDir/wrappers/$1")
+    rm -rf "$serverTmpDir/wrappers"
+    $1 "$output"
+  fi
 }
 
-# cmds
+function fiction_closing_element() {
+  echo -e "</${1}>"
+}
 
 function str() {
-  fiction_sanitize_html "$@"
+  if [ -d "$serverTmpDir/wrappers/" ]; then 
+    local file=($serverTmpDir/wrappers/*) 
+    local out=$(fiction_sanitize_html "$@")
+    echo -e "$out" >"$file"
+  else 
+    fiction_sanitize_html "$@\n"
+  fi
+}
+
+function @type {
+  case "$1" in 
+    "wrapper")
+      mkdir -p "$serverTmpDir/wrappers"
+      : > "$serverTmpDir/wrappers/${FUNCNAME[1]}"
+    "function /${FUNCNAME[1]} { local output=\$(cat "$serverTmpDir/wrappers/${FUNCNAME[1]}"); rm -rf "$serverTmpDir/wrappers"; ${FUNCNAME[1]} \"\$output\"; }; export -f /${FUNCNAME[1]}"
+  esac
 }
 
 function import() {
@@ -121,67 +156,6 @@ send_encoded_frame() {
   printf '%s' "$1"
 }
 
-parseHttpRequest() {
-  # Get information about the request
-  read -r REQUEST_METHOD REQUEST_PATH HTTP_VERSION
-  HTTP_VERSION="${HTTP_VERSION%%$'\r'}"
-}
-
-parseHttpHeaders() {
-  local line _h _v
-  # Split headers and put it inside HTTP_HEADERS, so it can be reused
-  while read -r line; do
-    line="${line%%$'\r'}"
-    [[ -z "$line" ]] && return
-    _h="${line%%:*}"
-    HTTP_HEADERS["${_h,,}"]="${line#*: }"
-  done
-}
-
-parseGetData() {
-  local entry
-  # Split QUERY_STRING into an assoc, so it can be easy reused
-  IFS='?' read -r REQUEST_PATH get <<<"$REQUEST_PATH"
-
-  # Url decode get data
-  get="$(urldecode "$get")"
-
-  # Split html #
-  IFS='#' read -r REQUEST_PATH _ <<<"$REQUEST_PATH"
-  QUERY_STRING="$get"
-  IFS='&' read -ra data <<<"$get"
-  for entry in "${data[@]}"; do
-    GET["${entry%%=*}"]="${entry#*:}"
-  done
-  REQUEST_PATH="$(dirname "$REQUEST_PATH")/$(basename "$REQUEST_PATH")"
-  REQUEST_PATH="${REQUEST_PATH#/}"
-}
-
-parsePostData() {
-  local entry
-  # Split POst data into an assoc if is a form, if not create a key raw
-  if [[ "${HTTP_HEADERS["Content-type"]}" == "application/x-www-form-urlencoded" ]]; then
-    IFS='&' read -rN "${HTTP_HEADERS["Content-Length"]}" -a data
-    for entry in "${data[@]}"; do
-      entry="${entry%%$'\r'}"
-      POST["${entry%%=*}"]="${entry#*:}"
-    done
-  else
-    read -rN "${HTTP_HEADERS["Content-Length"]}" data
-    POST["raw"]="${data%%$'\r'}"
-  fi
-}
-
-parseCookieData() {
-  local -a cookie
-  local entry key value
-  IFS=';' read -ra cookie <<<"${HTTP_HEADERS["Cookie"]}"
-
-  for entry in "${cookie[@]}"; do
-    IFS='=' read -r key value <<<"$entry"
-    COOKIE["${key# }"]="${value% }"
-  done
-}
 
 httpSendStatus() {
   local -A status_code=(
@@ -201,9 +175,34 @@ httpSendStatus() {
 HTTP_RESPONSE_HEADERS["status"]="${status_code[${1:-200}]}"
 }
 
-buildHttpHeaders() {
-  # We will first send the status header and then all the other headers
- printf '%s %s\n' "HTTP/1.1" "${HTTP_RESPONSE_HEADERS["status"]}"
+buildResponse() {
+  httpSendStatus "$1"
+  [[ $1 == 401 ]] &&
+    {
+      HTTP_RESPONSE_HEADERS['WWW-Authenticate']="Basic realm=WebServer"
+       printf '%s %s\n' "HTTP/1.1" "${HTTP_RESPONSE_HEADERS["status"]}"
+       unset 'HTTP_RESPONSE_HEADERS["status"]'
+
+      for value in "${cookie_to_send[@]}"; do
+        printf 'Set-Cookie: %s\n' "$value"
+      done
+      for key in "${!HTTP_RESPONSE_HEADERS[@]}"; do
+        printf '%s: %s\n' "${key,,}" "${HTTP_RESPONSE_HEADERS[$key]}"
+      done
+      return
+    }
+
+  [ -f "$serverTmpDir/output" ] && rm "$serverTmpDir/output"
+  "$run" > "$serverTmpDir/output"
+  if [[ -z "${FictionRouteContentType["${REQUEST_PATH}"]}" || "${FictionRouteContentType["${REQUEST_PATH}"]}" == "auto" ]]; then 
+    local filename=''; type="$(file --mime "$serverTmpDir/output")" charset='';
+    IFS=' ' read filename type charset <<< "$type"; 
+    which file 2>&1 >/dev/null && HTTP_RESPONSE_HEADERS["content-type"]="${type//;}"
+  else
+    HTTP_RESPONSE_HEADERS["content-type"]="${FictionRouteContentType["${REQUEST_PATH}"]:-html}"
+  fi
+  HTTP_RESPONSE_HEADERS["content-length"]="$(wc -c < "$serverTmpDir/output")"
+  printf '%s %s\n' "HTTP/1.1" "${HTTP_RESPONSE_HEADERS["status"]}"
   unset 'HTTP_RESPONSE_HEADERS["status"]'
 
   for value in "${cookie_to_send[@]}"; do
@@ -212,64 +211,10 @@ buildHttpHeaders() {
   for key in "${!HTTP_RESPONSE_HEADERS[@]}"; do
     printf '%s: %s\n' "${key,,}" "${HTTP_RESPONSE_HEADERS[$key]}"
   done
-}
-
-websocketStart() {
-  websocketStart=1
-  websocketRunner="$1"
-}
-
-websocketStop() {
-  websocketStop=1
-}
-
-buildResponse() {
-  # Every output will first be saved in a file and then printed to the output
-  # Like this we can build a clean output to the client
-
-  local websocketStart websocketRunner websocketStop sha1
-  websocketStart=0
-  websocketStop=0
-
-  # build a default header
-  httpSendStatus "$1"
-
-  [[ $1 == 401 ]] &&
-    {
-      HTTP_RESPONSE_HEADERS['WWW-Authenticate']="Basic realm=WebServer"
-      buildHttpHeaders
-      return
-    }
-
-  HTTP_RESPONSE_HEADERS["content-type"]=${FictionRouteContentType["${REQUEST_PATH}"]:-html}
-  [ -f "$serverTmpDir/output" ] && rm "$serverTmpDir/output"
-  "$run" > "$serverTmpDir/output"
-  HTTP_RESPONSE_HEADERS["content-length"]="$(wc -c < "$serverTmpDir/output")"
-  buildHttpHeaders
-  # From HTTP RFC 2616 send newline before body
   printf "\n"
  # printf '%s\n' "$(<"$serverTmpDir/output")"
   cat "$serverTmpDir/output"
   printf "\n"
-
-  # remove tmpfile, this should be trapped...
-  # XXX: No needed anymore, since the clean will do the job for use
-  # rm "$tmpFile"
-
-  if ((websocketStart)); then
-    local websocketStop
-    websocketStop=0
-    sleep 3
-    while true; do
-      "$websocketRunner" >"$TMPDIR/output"
-      message="$(<"$TMPDIR/output")"
-      send_encoded_frame "$message"
-      #            encode_message "$message"
-      sleep 5
-      ((websocketStop)) && break
-    done
-  fi
-
 }
 
 parseAndPrint() {
@@ -286,21 +231,42 @@ parseAndPrint() {
   # Now mktemp will write create files inside the temporary directory
   local -r TMPDIR="$serverTmpDir"
   # Parse Request
-  parseHttpRequest
-  [[ -z "$REQUEST_METHOD" || -z "$REQUEST_PATH" ]] && exit 1
-  # Create headers assoc
-  parseHttpHeaders
+  read -r REQUEST_METHOD REQUEST_PATH HTTP_VERSION
+  HTTP_VERSION="${HTTP_VERSION%%$'\r'}"
+  [[ -z "$REQUEST_METHOD" || -z "$REQUEST_PATH" ]] && return
+  
+  local line _h _v
+  while read -r line; do
+    line="${line%%$'\r'}"
+    [[ -z "$line" ]] && break
+    _h="${line%%:*}"
+    HTTP_HEADERS["${_h,,}"]="${line#*: }"
+  done
+  unset line _h _v 
 
-  # Basic Auth
-  if ((BASIC_AUTH)); then
-    basicAuth || return 1
-  fi
+  local entry
+  IFS='?' read -r REQUEST_PATH get <<<"$REQUEST_PATH"
+  get="$(urldecode "$get")"
+  IFS='#' read -r REQUEST_PATH _ <<<"$REQUEST_PATH"
+  QUERY_STRING="$get"
+  IFS='&' read -ra data <<<"$get"
+  for entry in "${data[@]}"; do
+    GET["${entry%%=*}"]="${entry#*:}"
+  done
+  REQUEST_PATH="$(dirname "$REQUEST_PATH")/$(basename "$REQUEST_PATH")"
+  REQUEST_PATH="${REQUEST_PATH#/}"
+  
+  entry=''
 
-  # Parse Get Data
-  parseGetData
+  local -a cookie
+  local  key value
+  IFS=';' read -ra cookie <<<"${HTTP_HEADERS["Cookie"]}"
 
-  # Parse cookie data
-  parseCookieData
+  for entry in "${cookie[@]}"; do
+    IFS='=' read -r key value <<<"$entry"
+    COOKIE["${key# }"]="${value% }"
+  done
+  unset entry cookie key value
 
   if [[ -z "${COOKIE["$SESSION_COOKIE"]}" ]] || [[ "${COOKIE["$SESSION_COOKIE"]}" == *..* ]]; then
     SESSION_ID="$(uuidgen)"
@@ -310,7 +276,18 @@ parseAndPrint() {
   # Parse post data only if length is > 0 and post is specified
   # bash (( will not fail if var is not a number, it will just return 1, no need of int check
   if [[ "$REQUEST_METHOD" == "POST" ]] && ((${HTTP_HEADERS['Content-Length']} > 0)); then
-    parsePostData
+    local entry
+    if [[ "${HTTP_HEADERS["Content-type"]}" == "application/x-www-form-urlencoded" ]]; then
+      IFS='&' read -rN "${HTTP_HEADERS["Content-Length"]}" -a data
+      for entry in "${data[@]}"; do
+        entry="${entry%%$'\r'}"
+        POST["${entry%%=*}"]="${entry#*:}"
+      done
+    else
+      read -rN "${HTTP_HEADERS["Content-Length"]}" data
+      POST["raw"]="${data%%$'\r'}"
+    fi
+    unset entry
   fi
 
   buildResponse 200
@@ -330,14 +307,9 @@ basicAuth() {
     return 0
   fi
 
-  # Decode auth data
-  # TODO: implement base64 in bash
   authData="$(base64 -d <<<"${HTTP_HEADERS["Authorization"]# Basic }")"
-
-  # Split auth data into user and password
   IFS=: read -r user password <<<"$authData"
 
-  # Check if user and password appear in users.csv
   while read -r r_user r_password; do
     [[ "$r_user" == "$user" && "$r_password" == "$password" ]] && {
       return
@@ -409,91 +381,6 @@ clean() {
   [[ -n "$serverTmpDir" && -d "$serverTmpDir" ]] && rm -rf "$serverTmpDir"
 }
 
-opensslErrorHandler() {
-while read -r line; do
-  if [[ "$line" =~ "Address already in use" ]]; then 
-    echo "Couldn't bind at port $HTTP_PORT: Address already in use" >&2 
-    exit 1
-  elif [[ "$line" =~ "Could not open file or uri for loading server certificate private key from route" ]]; then 
-    echo "Couldn't load key file $key" >&2 
-  fi
-done
-}
-
-parseandprint() {
-  local REQUEST_METHOD REQUEST_PATH HTTP_VERSION QUERY_STRING
-  local -A HTTP_HEADERS
-  local -A POST
-  local -A GET
-  local -A HTTP_RESPONSE_HEADERS
-  local -A COOKIE
-  local -A SESSION
-  local -a cookie_to_send
-  parseHttpRequest
-  parseHttpHeaders
-  if ((BASIC_AUTH)); then
-    basicAuth || return 1
-  fi
-  parseGetData
-  parseCookieData
-  if [[ -z "${COOKIE["$SESSION_COOKIE"]}" ]] || [[ "${COOKIE["$SESSION_COOKIE"]}" == *..* ]]; then
-    SESSION_ID="$(uuidgen)"
-  else
-    SESSION_ID="${COOKIE["$SESSION_COOKIE"]}"
-  fi
-  if [[ "$REQUEST_METHOD" == "POST" ]] && ((${HTTP_HEADERS['Content-Length']} > 0)); then
-    parsePostData
-  fi
-  buildResponse 200
-}
-
-parseAndPrintSSL() {
-  kill -0 "$_pid" 2>/dev/null && kill -9 "$_pid"
- # kill -0 "$https_proc_PID" 2>/dev/null && kill -9 "$https_proc_PID"
-  coproc https_proc { exec -a "fiction" ncat --ssl -k -l -p "$HTTP_PORT" --ssl-cert "$SSL_CERT" --ssl-key "$SSL_KEY"; } || break
-  _pid="$https_proc_PID"
-  local i=1;
-  #opensslErrorHandler <&3 &
-  local headers=""
-  while read -u ${https_proc[0]} data; do
-    headers+="$data"
-    if [[ "${#data}" == "1" ]]; then
-      parseAndPrint <<<"$headers" >&${https_proc[1]}
-      headers=""
-      rm -rf "$serverTmpDir"
-      serverTmpDir="$(mktemp -d)"
-    fi
-  done
-  kill -9 "$_pid"
-  rm /tmp/fifo
- # kill -9 "$https_proc_PID" 
-  set +x
-}
-
-parseandprintssl() {
-    coproc SSLOUT { openssl s_server -accept 8443 -cert cert.pem -key key.pem -quiet; }
-  http_data=""
-  serverTmpDir="$(mktemp -d)"
-  local headers=""
-  while read data <&${SSLOUT[0]}; do
-    echo "$data"
-    echo WRITE
-    headers+="$data"
-    echo PASS
-    if [ "${#data}" == "1" ]; then
-      echo "${headers}"
-      echo DATA OK.
-      sleep 1
-      parseAndPrint <<<"$headers" >&"${SSLOUT[1]}"
-
-      headers=""
-      rm -rf "$serverTmpDir"
-      serverTmpDir="$(mktemp -d)"
-    fi
-  done
-  exit
-}
-
 main() {
   : "${HTTPS:=false}"
   : "${SSL_KEY:=key.pem}"
@@ -520,28 +407,11 @@ main() {
 
   trap clean EXIT
 
-  case "$1" in
-  serveHtml)
-    run="serveHtml"
-    ;;
-  fiction)
-    run="FictionRequestHandler"
-    ;;
-  *)
-    # source the configuration file and check if runner is defined
-    [[ -z "$1" || ! -f "$1" ]] && {
-      printf '%s\n' "please provide a file to source as the first argument..."
-      exit 1
-    }
-    # source main file
-    source "$1"
-    type runner &>/dev/null || {
-      printf '%s\n' "The source file need a function nammed runner which will be executed on each request..."
-      exit 1
-    }
-    run="runner"
-    ;;
-  esac
+  run="FictionRequestHandler"
+  if [[ ! -d "$serverTmpDir" || -z "$serverTmpDir" ]]; then
+      export serverTmpDir="$(mktemp -d)"
+     # export TMPDIR="/tmp"
+  fi
   if "$HTTPS"; then
       kill -0 "$_pid" 2>/dev/null && kill -9 "$_pid"
       coproc https_proc {  exec -a "fiction" socat openssl-listen:"$HTTP_PORT",bind="$BIND_ADDRESS",verify=0,cert="$SSL_CERT",key="$SSL_KEY",reuseaddr,fork STDIO; }
@@ -559,27 +429,21 @@ main() {
       done
       kill -9 "$_pid"
   else
-  #  while :; do
-    if [[ ! -d "$serverTmpDir" || -z "$serverTmpDir" ]]; then
-      export serverTmpDir="$(mktemp -d)"
-      TMPDIR="$serverTmpDir"
-    fi
+   while :; do
     # author tried to implement multi-connection support by using subshells in the background, but it's very ineffective to use "until ... do true", as it makes dozens of system calls to filesystem
-        accept -b "${BIND_ADDRESS}" "${HTTP_PORT}" || {
+      accept -b "${BIND_ADDRESS}" "${HTTP_PORT}" || {
         printf '%s\n' "Could not listen on ${BIND_ADDRESS}:${HTTP_PORT}"
         exit 1
-        }
-        
-      printf -v TIME_FORMATTED '%(%d/%b/%Y:%H:%M:%S)T' -1
-      printf -v TIME_SECONDS '%(%s)T' -1
+      }
       parseAndPrint <&${ACCEPT_FD} >&${ACCEPT_FD}
-      exec {ACCEPT_FD}>&-
-
-      # remove the temporary directory
+      exec {ACCEPT_FD}>&- 
       rm -rf "$serverTmpDir"
+      serverTmpDir="$(mktemp -d)"
+      
+      # remove the temporary directory
      
-    _pid="$!"
-  #done
+
+  done
 fi
 }
 
@@ -588,6 +452,11 @@ function getQuery() {
   [ -z "$1" ] && return
   IFS="=" read -r _ val <<<"${GET["$1"]}"
   echo "$val"
+}
+
+function getSlug() {
+  [ -z "$1" ] && return
+  eval "echo \$FICTION_SLUG_$1"
 }
 
 # HelperFns
@@ -599,7 +468,7 @@ function FictionServePath() {
 }
 
 function FictionServeDynamicPath() {
-  # FictionServePath <from> <to:fn> <as>
+  # FictionServeDynamicPath <from> <to:fn> <as>
   echo "Added dynamic route: from '$1' to '$2' as '$3'"
   FictionDynamicRoute+=("$1:$2")
   FictionRouteContentType["$1"]="$3"
@@ -680,7 +549,7 @@ function FictionRequestHandler() {
         fi
         ((i++))
       done
-      ((matching_slugs > 0)) && $funcname
+      ((matching_slugs > 0)) && IS_DYNAMIC_ROUTE=true && $funcname
   done
   else
     httpSendStatus 404
@@ -694,11 +563,11 @@ function FictionHttpServer() {
   if [[ "$origaddress" =~ "https://" ]]; then
    HTTPS=true
    origaddress="${origaddress//https:\/\/}"
-  elif [[ "$address" =~ "http://" ]]; then
+  elif [[ "$origaddress" =~ "http://" ]]; then
    origaddress="${origaddress//http:\/\/}"
   fi
   IFS=':' read -r address port <<<"$origaddress"
-  [ -z "$port" ] && { "$HTTPS" && port=443 || port=80; }
+  [ -z "$port" ] && { "${HTTPS:=false}" && port=443 || port=80; }
   export BIND_ADDRESS="$address" HTTP_PORT="$port"
   shift
   while [[ "$#" -gt 0 ]]; do
