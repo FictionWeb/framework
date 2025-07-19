@@ -12,7 +12,7 @@ FICTION_HTTP_ERROR_END="<hr><p>Fiction Web Server</h1></center></html>"
 function fiction_sanitize_html() {
   # https://stackoverflow.com/a/12873723
   [[ ! "$@" =~ '%'|'<'|'>'|\"|\' ]] && printf "$@" && return
-  local string="${@//%/%amp;}"
+  local string="${@//\%/&amp;}"
   string="${string//</&lt;}"
   string="${string//>/&gt;}"
   string="${string//\"/&quot;}"
