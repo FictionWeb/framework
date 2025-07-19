@@ -11,8 +11,8 @@ serverTmpDir="$(mktemp -d)"
 # Helper functions
 function fiction_sanitize_html() {
   # https://stackoverflow.com/a/12873723
-  [[ ! "$@" =~ '%'|'<'|'>'|\"|\' ]] && printf "$@" && return 
-  local string="${@//%/%amp;}";
+  [[ ! "$@" =~ '%'|'<'|'>'|\"|\' ]] && printf "$@" && return
+  local string="${@//%/%amp;}"
   string="${string//</&lt;}"
   string="${string//>/&gt;}"
   string="${string//\"/&quot;}"
@@ -23,36 +23,23 @@ function fiction_sanitize_html() {
 # Handler
 
 function fiction_element() {
-  STDOUT=`readlink -f /proc/$$/fd/1`
-  if [ -d "$serverTmpDir/wrappers/" ]; then 
-    file=($serverTmpDir/wrappers/*)
-    exec >"$file"
-  fi
-    echo -n "<${1}"
-    shift
-    for arg in "$@"; do
-      echo -n " " # very necessary
-      if [[ "$arg" == *"="* ]]; then
-        # Do sanitization
-        IFS='=' read -r key value <<<"$arg"
-        fiction_sanitize_html "$key=" # by html standards, key musn't have quotes
+  echo -n "<${1}"
+  shift
+  for arg in "$@"; do
+    echo -n " " # very necessary
+    if [[ "$arg" == *"="* ]]; then
+      # Do sanitization
+      IFS='=' read -r key value <<<"$arg"
+      fiction_sanitize_html "$key=" # by html standards, key musn't have quotes
 
-        echo -n '"'
-        fiction_sanitize_html "$value"
-        echo -n '"' # Add quotes bc why not
-      else
-        fiction_sanitize_html "$arg"
-      fi
-    done
+      echo -n '"'
+      fiction_sanitize_html "$value"
+      echo -n '"' # Add quotes bc why not
+    else
+      fiction_sanitize_html "$arg"
+    fi
+  done
   echo -ne ">"
-}
-
-function / {
-  if [ -f "$serverTmpDir/wrappers/$1" ]; then
-    local output=$(cat "$serverTmpDir/wrappers/$1")
-    rm -rf "$serverTmpDir/wrappers"
-    $1 "$output"
-  fi
 }
 
 function fiction_closing_element() {
@@ -60,44 +47,34 @@ function fiction_closing_element() {
 }
 
 function str() {
-  if [ -d "$serverTmpDir/wrappers/" ]; then 
-    local file=($serverTmpDir/wrappers/*) 
-    local out=$(fiction_sanitize_html "$@")
-    echo -e "$out" >"$file"
-  else 
-    fiction_sanitize_html "$@\n"
-  fi
+  fiction_sanitize_html "$@\n"
 }
 
-function @type {
-  case "$1" in 
-    "wrapper")
-      mkdir -p "$serverTmpDir/wrappers"
-      : > "$serverTmpDir/wrappers/${FUNCNAME[1]}"
-    "function /${FUNCNAME[1]} { local output=\$(cat "$serverTmpDir/wrappers/${FUNCNAME[1]}"); rm -rf "$serverTmpDir/wrappers"; ${FUNCNAME[1]} \"\$output\"; }; export -f /${FUNCNAME[1]}"
-  esac
+function @wrapper() {
+  [ -z "$(declare -F "$1")" ] && return
+  eval "$(declare -f "$1" | sed "s+{@children};+}; /${1}(){+g")"
 }
 
 function import() {
-  # Syntax: import <filename>  || import <filename> as <ElementAlias> 
+  # Syntax: import <filename>  || import <filename> as <ElementAlias>
   # import <function> from <filename> || import <function> from <filename> as <ElementAlias>
   local name filename
   [ -z "$name" ] && name="$1"
-  shift 
-  if [[ "$1" == "as" ]]; then 
+  shift
+  if [[ "$1" == "as" ]]; then
     if [ ! -f "$name" ]; then
       echo "$name not found to import."
       exit 1
     fi
-    shift 
+    shift
     if [ -z "$1" ]; then
       fn_name=""${name%.*}""
     else
       fn_name="$1"
     fi
     eval "${fn_name}() { source \"$name\"; }"
-  elif [[ "$1" == "from" ]]; then 
-    shift 
+  elif [[ "$1" == "from" ]]; then
+    shift
     filename="$1"
     if [ ! -f "$filename" ]; then
       echo "$name not found to import."
@@ -105,15 +82,15 @@ function import() {
     fi
     local funcout="$(sed -n '/'"$name"'.*\(\)/,/^}/p' "$filename")"
     shift
-    if [[ "$1" == "as" ]]; then 
-      shift 
+    if [[ "$1" == "as" ]]; then
+      shift
       if [ -z "$1" ]; then
         fn_name="${name%.*}"
       else
         fn_name="$1"
       fi
       eval "${funcout/$name/$fn_name}"
-    else  
+    else
       [[ -n "$funcout" ]] && eval "$funcout"
     fi
   fi
@@ -156,7 +133,6 @@ send_encoded_frame() {
   printf '%s' "$1"
 }
 
-
 httpSendStatus() {
   local -A status_code=(
     [101]="101 Switching Protocols"
@@ -172,7 +148,7 @@ httpSendStatus() {
     [500]="500 Internal Server Error"
   )
 
-HTTP_RESPONSE_HEADERS["status"]="${status_code[${1:-200}]}"
+  HTTP_RESPONSE_HEADERS["status"]="${status_code[${1:-200}]}"
 }
 
 buildResponse() {
@@ -180,8 +156,8 @@ buildResponse() {
   [[ $1 == 401 ]] &&
     {
       HTTP_RESPONSE_HEADERS['WWW-Authenticate']="Basic realm=WebServer"
-       printf '%s %s\n' "HTTP/1.1" "${HTTP_RESPONSE_HEADERS["status"]}"
-       unset 'HTTP_RESPONSE_HEADERS["status"]'
+      printf '%s %s\n' "HTTP/1.1" "${HTTP_RESPONSE_HEADERS["status"]}"
+      unset 'HTTP_RESPONSE_HEADERS["status"]'
 
       for value in "${cookie_to_send[@]}"; do
         printf 'Set-Cookie: %s\n' "$value"
@@ -193,15 +169,16 @@ buildResponse() {
     }
 
   [ -f "$serverTmpDir/output" ] && rm "$serverTmpDir/output"
-  "$run" > "$serverTmpDir/output"
-  if [[ -z "${FictionRouteContentType["${REQUEST_PATH}"]}" || "${FictionRouteContentType["${REQUEST_PATH}"]}" == "auto" ]]; then 
-    local filename=''; type="$(file --mime "$serverTmpDir/output")" charset='';
-    IFS=' ' read filename type charset <<< "$type"; 
-    which file 2>&1 >/dev/null && HTTP_RESPONSE_HEADERS["content-type"]="${type//;}"
+  "$run" >"$serverTmpDir/output"
+  if [[ -z "${FictionRouteContentType["${REQUEST_PATH}"]}" || "${FictionRouteContentType["${REQUEST_PATH}"]}" == "auto" ]]; then
+    local filename=''
+    type="$(file --mime "$serverTmpDir/output")" charset=''
+    IFS=' ' read filename type charset <<<"$type"
+    which file 2>&1 >/dev/null && HTTP_RESPONSE_HEADERS["content-type"]="${type//;/}"
   else
     HTTP_RESPONSE_HEADERS["content-type"]="${FictionRouteContentType["${REQUEST_PATH}"]:-html}"
   fi
-  HTTP_RESPONSE_HEADERS["content-length"]="$(wc -c < "$serverTmpDir/output")"
+  HTTP_RESPONSE_HEADERS["content-length"]="$(wc -c <"$serverTmpDir/output")"
   printf '%s %s\n' "HTTP/1.1" "${HTTP_RESPONSE_HEADERS["status"]}"
   unset 'HTTP_RESPONSE_HEADERS["status"]'
 
@@ -212,7 +189,7 @@ buildResponse() {
     printf '%s: %s\n' "${key,,}" "${HTTP_RESPONSE_HEADERS[$key]}"
   done
   printf "\n"
- # printf '%s\n' "$(<"$serverTmpDir/output")"
+  # printf '%s\n' "$(<"$serverTmpDir/output")"
   cat "$serverTmpDir/output"
   printf "\n"
 }
@@ -234,7 +211,7 @@ parseAndPrint() {
   read -r REQUEST_METHOD REQUEST_PATH HTTP_VERSION
   HTTP_VERSION="${HTTP_VERSION%%$'\r'}"
   [[ -z "$REQUEST_METHOD" || -z "$REQUEST_PATH" ]] && return
-  
+
   local line _h _v
   while read -r line; do
     line="${line%%$'\r'}"
@@ -242,7 +219,7 @@ parseAndPrint() {
     _h="${line%%:*}"
     HTTP_HEADERS["${_h,,}"]="${line#*: }"
   done
-  unset line _h _v 
+  unset line _h _v
 
   local entry
   IFS='?' read -r REQUEST_PATH get <<<"$REQUEST_PATH"
@@ -255,11 +232,11 @@ parseAndPrint() {
   done
   REQUEST_PATH="$(dirname "$REQUEST_PATH")/$(basename "$REQUEST_PATH")"
   REQUEST_PATH="${REQUEST_PATH#/}"
-  
+
   entry=''
 
   local -a cookie
-  local  key value
+  local key value
   IFS=';' read -ra cookie <<<"${HTTP_HEADERS["Cookie"]}"
 
   for entry in "${cookie[@]}"; do
@@ -409,42 +386,41 @@ main() {
 
   run="FictionRequestHandler"
   if [[ ! -d "$serverTmpDir" || -z "$serverTmpDir" ]]; then
-      export serverTmpDir="$(mktemp -d)"
-     # export TMPDIR="/tmp"
+    export serverTmpDir="$(mktemp -d)"
+    # export TMPDIR="/tmp"
   fi
   if "$HTTPS"; then
-      kill -0 "$_pid" 2>/dev/null && kill -9 "$_pid"
-      coproc https_proc {  exec -a "fiction" socat openssl-listen:"$HTTP_PORT",bind="$BIND_ADDRESS",verify=0,cert="$SSL_CERT",key="$SSL_KEY",reuseaddr,fork STDIO; }
-      _pid="$https_proc_PID"
-      local i=1;
-      local headers=""
-      while read -u ${https_proc[0]} data; do
-        headers+="$data"
-        if [[ "${#data}" == "1" ]]; then
-          parseAndPrint <<<"$headers" >&${https_proc[1]}
-          headers=""
-          rm -rf "$serverTmpDir"
-          serverTmpDir="$(mktemp -d)"
+    kill -0 "$_pid" 2>/dev/null && kill -9 "$_pid"
+    coproc https_proc { exec -a "fiction" socat openssl-listen:"$HTTP_PORT",bind="$BIND_ADDRESS",verify=0,cert="$SSL_CERT",key="$SSL_KEY",reuseaddr,fork STDIO; }
+    _pid="$https_proc_PID"
+    local i=1
+    local headers=""
+    while read -u ${https_proc[0]} data; do
+      headers+="$data"
+      if [[ "${#data}" == "1" ]]; then
+        parseAndPrint <<<"$headers" >&${https_proc[1]}
+        headers=""
+        rm -rf "$serverTmpDir"
+        serverTmpDir="$(mktemp -d)"
       fi
-      done
-      kill -9 "$_pid"
+    done
+    kill -9 "$_pid"
   else
-   while :; do
-    # author tried to implement multi-connection support by using subshells in the background, but it's very ineffective to use "until ... do true", as it makes dozens of system calls to filesystem
+    while :; do
+      # author tried to implement multi-connection support by using subshells in the background, but it's very ineffective to use "until ... do true", as it makes dozens of system calls to filesystem
       accept -b "${BIND_ADDRESS}" "${HTTP_PORT}" || {
         printf '%s\n' "Could not listen on ${BIND_ADDRESS}:${HTTP_PORT}"
         exit 1
       }
       parseAndPrint <&${ACCEPT_FD} >&${ACCEPT_FD}
-      exec {ACCEPT_FD}>&- 
+      exec {ACCEPT_FD}>&-
       rm -rf "$serverTmpDir"
       serverTmpDir="$(mktemp -d)"
-      
-      # remove the temporary directory
-     
 
-  done
-fi
+      # remove the temporary directory
+
+    done
+  fi
 }
 
 # --- END OF https://github.com/dzove855/Bash-web-server/ ---
@@ -462,14 +438,14 @@ function getSlug() {
 # HelperFns
 function FictionServePath() {
   # FictionServePath <from> <to:fn> <as>
-  echo "Added route: from '$1' to '$2' as '$3'"
+  echo "Added route: from '$1' to '$2' $([ -n "$3" ] && echo "as '$3'")"
   FictionRoute["$1"]="$2"
   FictionRouteContentType["$1"]="$3"
 }
 
 function FictionServeDynamicPath() {
   # FictionServeDynamicPath <from> <to:fn> <as>
-  echo "Added dynamic route: from '$1' to '$2' as '$3'"
+  echo "Added dynamic route: from '$1' to '$2' $([ -n "$3" ] && echo "as '$3'")"
   FictionDynamicRoute+=("$1:$2")
   FictionRouteContentType["$1"]="$3"
 }
@@ -533,24 +509,24 @@ function FictionRequestHandler() {
     ${FictionRoute["${REQUEST_PATH}"]}
   elif [[ ${#FictionDynamicRoute[@]} > 0 ]]; then
     local matching_slugs=0
-    IFS='/' read -ra path_keys <<< "${REQUEST_PATH#\/}";
+    IFS='/' read -ra path_keys <<<"${REQUEST_PATH#\/}"
     i=0
     for route in ${FictionDynamicRoute[@]}; do
-      IFS=':' read route funcname <<< "$route"
-      IFS='/' read -ra route_keys <<< "${route#\/}"
+      IFS=':' read route funcname <<<"$route"
+      IFS='/' read -ra route_keys <<<"${route#\/}"
       for subroute in ${route_keys[@]}; do
-        if [[ $subroute =~ '[' ]]; then 
+        if [[ $subroute =~ '[' ]]; then
           local slug="${subroute#\[}"
           slug="${slug%\]}"
           printf -v "FICTION_SLUG_$slug" "%s" "${path_keys[$i]}"
           ((matching_slugs++))
-        elif [[ ! $route =~ ${route_keys[$i]} ]]; then 
-          break 
+        elif [[ ! $route =~ ${route_keys[$i]} ]]; then
+          break
         fi
         ((i++))
       done
       ((matching_slugs > 0)) && IS_DYNAMIC_ROUTE=true && $funcname
-  done
+    done
   else
     httpSendStatus 404
     sendError "404 Page Not Found"
@@ -561,10 +537,10 @@ function FictionHttpServer() {
   # FictionHttpServer <port>
   local origaddress="$1"
   if [[ "$origaddress" =~ "https://" ]]; then
-   HTTPS=true
-   origaddress="${origaddress//https:\/\/}"
+    HTTPS=true
+    origaddress="${origaddress//https:\/\//}"
   elif [[ "$origaddress" =~ "http://" ]]; then
-   origaddress="${origaddress//http:\/\/}"
+    origaddress="${origaddress//http:\/\//}"
   fi
   IFS=':' read -r address port <<<"$origaddress"
   [ -z "$port" ] && { "${HTTPS:=false}" && port=443 || port=80; }
@@ -573,7 +549,7 @@ function FictionHttpServer() {
   while [[ "$#" -gt 0 ]]; do
     case "${1}" in
     https)
-      shift 
+      shift
       shift
       HTTPS=true
       local cert="$1"
@@ -584,7 +560,7 @@ function FictionHttpServer() {
       SSL_CERT="$cert"
       SSL_KEY="$key"
       echo "Enabled HTTPS with cert file $cert and key file $key"
-    ;;
+      ;;
     dynamic)
       shift
       shift
@@ -597,7 +573,7 @@ function FictionHttpServer() {
       local as="$1"
       shift
       FictionServeDynamicPath "$from" "$to" "$as"
-    ;;
+      ;;
     route)
       shift
       local from="$1"
@@ -636,10 +612,10 @@ function FictionHttpServer() {
       ;;
     esac
   done
-  if "${HTTPS:=false}"; then 
-    [[ "$port" = 443 ]] &&  echo -e "\nServing your webserver at https://$address" || echo -e "\nServing your webserver at https://$address:$port" 
-  else 
-    [[ "$port" = 80 ]] &&  echo -e "\nServing your webserver at http://$address" || echo -e "\nServing your webserver at http://$address:$port"
+  if "${HTTPS:=false}"; then
+    [[ "$port" = 443 ]] && echo -e "\nServing your webserver at https://$address" || echo -e "\nServing your webserver at https://$address:$port"
+  else
+    [[ "$port" = 80 ]] && echo -e "\nServing your webserver at http://$address" || echo -e "\nServing your webserver at http://$address:$port"
   fi
   main fiction
 
