@@ -4,9 +4,9 @@
 FICTION_HTML_ELEMENTS="h1 h2 h3 h4 h5 h6 p a img ul ol li div span table tr td th thead tbody tfoot form input textarea button option label br hr em strong i b u s sub sup code pre blockquote article section nav header footer aside main details summary dialog figure figcaption audio video track canvas svg iframe object embed param meta link script style title base head body html doctype noscript template slot picture srcset map area tracktime datalist fieldset legend output progress meter menu command keygen mark ruby rt rp wbr bdi bdo abbr address cite dfn ins del kbd samp var" # thanks gemini
 
 # Http Server
-FICTION_HTTP_ERROR_BEGIN="<title>Error</title><center><h1>Fiction Web Server</h1><hr>"
-FICTION_HTTP_ERROR_END="</center>"
-serverTmpDir="$(mktemp -d)"
+FICTION_HTTP_ERROR_BEGIN="<html style='font-family:sans-serif;'><title>Error</title><center>"
+FICTION_HTTP_ERROR_END="<hr><p>Fiction Web Server</h1></center></html>"
+#serverTmpDir="$(mktemp -d)"
 
 # Helper functions
 function fiction_sanitize_html() {
@@ -329,7 +329,8 @@ cookieSet() {
 }
 
 sendError() {
-  printf '%s\n' "${FICTION_HTTP_ERROR_BEGIN}${@}${FICTION_HTTP_ERROR_END}"
+  set -- $1
+  printf '%s\n' "${FICTION_HTTP_ERROR_BEGIN}<h1 style='font-size:48px'>${1}</h1><h2>${@:2}</h2>${FICTION_HTTP_ERROR_END}"
 }
 
 serveHtml() {
