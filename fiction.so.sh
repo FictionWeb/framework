@@ -659,6 +659,31 @@ function FictionHttpServer() {
   else
     [[ "$port" = 80 ]] && echo -e "\nServing your webserver at http://$address" || echo -e "\nServing your webserver at http://$address:$port"
   fi
-  main fiction
 
+  # setup
+  export run="FictionRequestHandler"
+  if [[ ! -d "$serverTmpDir" || -z "$serverTmpDir" ]]; then
+    export serverTmpDir="$(mktemp -d)"
+    # export TMPDIR="/tmp"
+  fi
+
+  # create worker
+  declare -A >"$serverTmpDir/worker.sh"
+  declare -a >>"$serverTmpDir/worker.sh"
+  declare >>"$serverTmpDir/worker.sh"
+  echo "parseAndPrint" >>"$serverTmpDir/worker.sh"
+  chmod +x "$serverTmpDir/worker.sh"
+  cat >"$serverTmpDir/job.sh" <<EOF
+#!/bin/bash
+HEADERS=""
+while read -r val; do
+  HEADERS+="\${val//$'\r'/}"
+  if [ "\${#val}" == "1" ]; then
+    break
+  fi
+done
+echo "\$HEADERS" | bash $serverTmpDir/worker.sh 2>/dev/null
+EOF
+  chmod +x "$serverTmpDir/job.sh"
+  socat TCP-LISTEN:8080,reuseaddr,fork SYSTEM:"$serverTmpDir/job.sh"
 }
