@@ -258,6 +258,7 @@ parseAndPrint() {
   done
   unset line _h _v
 
+  echo "${HTTP_HEADERS[@]}" >&2
   local entry
   IFS='?' read -r REQUEST_PATH get <<<"$REQUEST_PATH"
   get="$(urldecode "$get")"
@@ -282,7 +283,7 @@ parseAndPrint() {
   done
   unset entry cookie key value
 
-  if [[ -z "${COOKIE["$SESSION_COOKIE"]}" ]] || [[ "${COOKIE["$SESSION_COOKIE"]}" == *..* ]]; then
+  if [[ -z "${COOKIE["$SESSION_COOKIE"]}" ]]; then
     SESSION_ID="$(uuidgen)"
   else
     SESSION_ID="${COOKIE["$SESSION_COOKIE"]}"
@@ -530,6 +531,11 @@ function FictionServeDir() {
 }
 
 # Init HttpLib
+
+function generate_csrf_token() {
+  head /dev/urandom | tr -dc 'A-Za-z0-9' | head -c48
+}
+
 
 function FictionRequestHandler() {
   # Don't allow going out of DOCUMENT_ROOT
