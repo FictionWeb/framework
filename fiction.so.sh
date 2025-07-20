@@ -157,8 +157,10 @@ function testcmd {
 }
 
 function testButton() {
-  FictionServePath "/_button${RANDOM}" "testcmd" "plain-text" >&2
-  (button onclick="fetch('/_button${RANDOM}',{method:'POST',headers:{'X-CSRF-Token':document.querySelector('meta[name=csrf-token]').content}}).then(r=>r.text()).then(t=>document.getElementById('target').style.display=t.trim()=='show'?'':'none')")
+  local name=${RANDOM}
+  FictionServePath "/_button$name" "testcmd" "plain-text" >&2
+  echo "${!FictionRoute[@]}" >&2
+  (button onclick="fetch('/_button$name',{method:'POST',headers:{'X-CSRF-Token':document.querySelector('meta[name=csrf-token]').content}}).then(r=>r.text()).then(t=>document.getElementById('target').style.display=t.trim()=='show'?'':'none')")
   str "Toggle Div"
 (/button)
 }
@@ -667,33 +669,17 @@ function FictionHttpServer() {
       ;;
     esac
   done
-<<<<<<< Updated upstream
-  if "${HTTPS:=false}"; then
-    [[ "$port" = 443 ]] && echo -e "\nServing your webserver at https://$address" || echo -e "\nServing your webserver at https://$address:$port"
-  else
-    [[ "$port" = 80 ]] && echo -e "\nServing your webserver at http://$address" || echo -e "\nServing your webserver at http://$address:$port"
-  fi
-
-  # setup
-  export run="FictionRequestHandler"
-  if [[ ! -d "$serverTmpDir" || -z "$serverTmpDir" ]]; then
-=======
 
   # setup
   export run="FictionRequestHandler"
   [ -d /tmp/tmp.* ] && rm -r /tmp/tmp\.* 2>/dev/null
   if [[ -z "$serverTmpDir" ]]; then
->>>>>>> Stashed changes
     export serverTmpDir="$(mktemp -d)"
     # export TMPDIR="/tmp"
   fi
 
   # create worker
   declare -A >"$serverTmpDir/worker.sh"
-<<<<<<< Updated upstream
-  declare -a >>"$serverTmpDir/worker.sh"
-  declare >>"$serverTmpDir/worker.sh"
-=======
   declare -a | grep -vE '(BASH_VERSINFO)'  >>"$serverTmpDir/worker.sh"
   declare | \
   grep -vE '(SSH_|^PWD|^OLDPWD|^TERM|^HOME|^USER|^PATH|BASH_VERSINFO|^BASHOPTS|^EUID|^PPID|^SHELLOPTS|^UID)' | \
@@ -707,7 +693,6 @@ function FictionHttpServer() {
    -e 's+(ruby+(fiction_element ruby+g' \
    -e 's+(/ruby)+echo "</ruby>"+g' >>"$serverTmpDir/worker.sh"
 
->>>>>>> Stashed changes
   echo "parseAndPrint" >>"$serverTmpDir/worker.sh"
   chmod +x "$serverTmpDir/worker.sh"
   cat >"$serverTmpDir/job.sh" <<EOF
@@ -719,12 +704,6 @@ while read -r val; do
     break
   fi
 done
-<<<<<<< Updated upstream
-echo "\$HEADERS" | bash $serverTmpDir/worker.sh 2>/dev/null
-EOF
-  chmod +x "$serverTmpDir/job.sh"
-  socat TCP-LISTEN:8080,reuseaddr,fork SYSTEM:"$serverTmpDir/job.sh"
-=======
 echo "\$HEADERS" | bash $serverTmpDir/worker.sh
 EOF
   chmod +x "$serverTmpDir/job.sh"
@@ -738,5 +717,4 @@ EOF
   fi
   trap clean EXIT
   clean
->>>>>>> Stashed changes
 }
