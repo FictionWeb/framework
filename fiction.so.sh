@@ -6,8 +6,7 @@ FICTION_HTML_ELEMENTS="h1 h2 h3 h4 h5 h6 p a img ul ol li div span table td th t
 # Http Server
 FICTION_HTTP_ERROR_BEGIN="<html style='font-family:sans-serif;'><title>Error</title><center>"
 FICTION_HTTP_ERROR_END="<hr><p>Fiction Web Server</h1></center></html>"
-#serverTmpDir="$(mktemp -d)"
-
+workerargs="-x"
 # Helper functions
 function fiction_sanitize_html() {
   # https://stackoverflow.com/a/12873723
@@ -158,9 +157,10 @@ function testcmd {
 
 function testButton() {
   local name=${RANDOM}
-  FictionServePath "/_button$name" "testcmd" "plain-text" >&2
+  id="$1"
+  FictionServePath "/__server-action$name" "testcmd" "plain-text" >&2
   echo "${!FictionRoute[@]}" >&2
-  (button onclick="fetch('/_button$name',{method:'POST',headers:{'X-CSRF-Token':document.querySelector('meta[name=csrf-token]').content}}).then(r=>r.text()).then(t=>document.getElementById('target').style.display=t.trim()=='show'?'':'none')")
+  (button onclick="fetch('/__server-action$name',{method:'POST',headers:{'X-CSRF-Token':document.querySelector('meta[name=csrf-token]').content}}).then(r=>r.text()).then(t=>document.getElementById('$id').style.display=t.trim()=='show'?'':'none')")
   str "Toggle Div"
 (/button)
 }
@@ -215,12 +215,13 @@ httpSendStatus() {
 }
 
 buildResponse() {
-  httpSendStatus "$1"
+  statuscode="$1"
+  httpSendStatus "$statuscode"
   local filename=''
   [[ $1 == 401 ]] &&
     {
       HTTP_RESPONSE_HEADERS['WWW-Authenticate']="Basic realm=WebServer"
-      printf '%s %s\n' "HTTP/1.1" "${HTTP_RESPONSE_HEADERS["status"]}"
+      printf '%s %s\n' "HTTP/1.1" "${HTTP_RESPONSE_HEADERS["status"]:=$statuscode}"
       unset 'HTTP_RESPONSE_HEADERS["status"]'
 
       for value in "${cookie_to_send[@]}"; do
@@ -251,16 +252,16 @@ buildResponse() {
   # printf '%s\n' "$(<"$filename")"
   if [[ "${HTTP_RESPONSE_HEADERS["content-type"]}" =~ html ]]; then 
     local isdoctype=false ishtml=false isbody=false iscbody=false ishead=false ischtml=false ischead=false
-
+    local output=$(cat "$filename")
     [[ "$output" =~ '<!DOCTYPE html>' ]] && isdoctype=true
     [[ "$output" =~ \<html ]] && { ishtml=true; [[ "$output" =~ '</html>' ]] && ischtml=true; }
     [[ "$output" =~ \<body ]] && { isbody=true; [[ "$output" =~ '</body>' ]] && iscbody=true; }
     [[ "$output" =~ '<head>' ]] && { ishead=true; [[ "$output" =~ '</head>' ]] && ischead=true; }
     ! "$isdoctype" &&  sed -i "1s|^|<!DOCTYPE html>|" "$filename"
-    ! "$ishtml" && sed -i "1s|^|<html>|" "$filename"
-    [ -n "${SESSIONS["$SESSION_ID"]}" ] && {
-      "$ishead" && sed -i "s|<head>|<head><meta name='csrf-token' content='${SESSIONS["$SESSION_ID"]}'>|" "$filename" || \
-                   sed -i "s|<html>|<html><head><meta name='csrf-token' content='${SESSIONS["$SESSION_ID"]}'></head>|" "$filename";
+    ! "$ishtml" && sed -i "1s|<!DOCTYPE html>|<!DOCTYPE html><html>|" "$filename"
+    local csrf=$(sessionGet "$SESSION_ID")
+    [[ -n "$csrf" && ! "$statuscode" =~ 401|404 ]] && {
+      "$ishead" && sed -i "s|<head>|<head><meta name='csrf-token' content='$csrf'>|" "$filename" || sed -i "s|<html>|<html><head><meta name='csrf-token' content='$csrf'></head>|" "$filename";
       ! "$ischead" && "$isbody" && sed -i "s|</head>" "$filename";
     }
     ! "$isbody" && "$ischead" && sed -i "s|</head>|<body>" "$filename"
@@ -283,9 +284,9 @@ buildResponse() {
     cat "$filename"
   fi
   printf "\n"
+  rm "$filename"
 }
-
-
+__x4gT9q6=( "$(openssl rand -hex 32)" "$(openssl rand -hex 16)" );
 parseAndPrint() {
   verbose=true
   # We will alway reset all variables and build them again
@@ -311,7 +312,6 @@ parseAndPrint() {
     line="${line%%$'\r'}"
     [[ -z "$line" ]] && break
     _h="${line%%:*}"
-    echo "$_h: ${line#*: }" >&2
     HTTP_HEADERS["${_h,,}"]="${line#*: }"
   done
   unset line _h
@@ -333,23 +333,17 @@ parseAndPrint() {
   local -a cookie
   local key value
   IFS=';' read -ra cookie <<<"${HTTP_HEADERS["cookie"]}"
-  [ -n "${HTTP_HEADERS["Cookie"]}" ] && ((${cookie[@]} < 1 )) && cookie+=( ${HTTP_HEADERS["cookie"]//;} )
+  echo "cookie1: ${cookie[@]}" >&2
+  [ -n "${HTTP_HEADERS["Cookie"]}" ] && ((${#cookie[@]} < 1 )) && cookie+=( ${HTTP_HEADERS["cookie"]//;} )
   for entry in ${cookie[@]}; do
     IFS='=' read -r key value <<<"$entry"
     [[ "$key" ]] && COOKIE["$key"]="${value}"
   done
   unset entry cookie key value
-  if [[ -z "${COOKIE["session_id"]}" ]]; then
-    SESSION_ID="$(generate_session_id)"
-    SESSIONS["$SESSION_ID"]="$(generate_csrf_token)"
-    cookieSet "session_id=$SESSION_ID; max-age=5000"
-  else
-    SESSION_ID="${COOKIE["session_id"]}"
-    if [[ -z "${SESSIONS["$SESSION_ID"]}" ]]; then 
-      SESSION_ID="$(generate_session_id)"
-      SESSIONS["$SESSION_ID"]="$(generate_csrf_token)"
-      cookieSet "session_id=$SESSION_ID; max-age=5000"
-    fi
+  if [[ -z "${COOKIE['session_id']}" ]]; then
+    sessionSet
+  else 
+    SESSION_ID="${COOKIE['session_id']}"
   fi
   # Parse post data only if length is > 0 and post is specified
   # bash (( will not fail if var is not a number, it will just return 1, no need of int check
@@ -399,36 +393,51 @@ basicAuth() {
   return 1
 }
 
-sessionStart() {
-  [[ -d "${SESSION_PATH}" ]] || {
-    echo "Missing Session Path \$SESSION_PATH" >&2
-    return 1
-  }
-
-  if [[ -f "${SESSION_PATH}/$SESSION_ID" ]]; then
-    return 0
-  else
-    cookieSet "$SESSION_COOKIE=$SESSION_ID; max-age=5000"
-    return 1
-  fi
+__e() {
+  openssl enc -aes-256-cbc -K "${__x4gT9q6[0]}" -iv "${__x4gT9q6[1]}" -out "$2" <<< "$1" 
 }
+
+__d() {
+    openssl enc -d -aes-256-cbc -K "${__x4gT9q6[0]}" -iv "${__x4gT9q6[1]}" -in "$1"
+}
+
 
 sessionGet() {
-  sessionStart && {
-    source "${SESSION_PATH}/$SESSION_ID"
-    printf '%s' "${SESSION[$1]}"
-  }
-}
-
-sessionSet() {
-  sessionStart && source "${SESSION_PATH}/$SESSION_ID"
-  SESSION["$1"]="$2"
-  declare -p SESSION >"${SESSION_PATH}/$SESSION_ID"
+  [ ! -f "$serverTmpDir/.sessions" ] && { echo ""; return; }
+  local s c s1 c1 m=false
+  s1=$(echo "$1" | sha256sum)
+  ou=$(__d "$serverTmpDir/.sessions" | grep "${s1::-3}")
+  [ -n "$ou" ] && IFS=' ' read s c <<< "$ou" || { echo ""; return; }
+  [[ "${s1::-3}" == "$s" ]] || { echo ""; return; }
+  c1=$(base64 -d <<< "$c")
+  echo "$c1"
 }
 
 cookieSet() {
   cookie_to_send+=("$1")
 }
+
+sessionSet() {
+  if [ ! -f "$serverTmpDir/.sessions" ]; then
+    : >"$serverTmpDir/.sessions"
+    local session="$(generate_session_id)" 
+    local ssession=$(echo "$session" | sha256sum)
+    local tok="$(generate_csrf_token | base64)"
+    __e "${ssession::-3} $tok" "$serverTmpDir/.sessions"
+    cookieSet "session_id=${session}; HttpOnly; max-age=5000"
+    unset session tok
+  else 
+    local ou="$(__d "$serverTmpDir/.sessions")"
+    local session="$(generate_session_id)" 
+    local ssession=$(echo "$session" | sha256sum)
+    local tok="$(generate_csrf_token | base64)"
+     ou+=$'\n'"${ssession::-3} $tok"
+    __e "$ou" "$serverTmpDir/.sessions"
+    cookieSet "session_id=${session}; HttpOnly; max-age=5000"
+    unset ou session tok
+  fi
+}
+
 
 sendError() {
   set -- $1
@@ -478,6 +487,20 @@ function FictionServePath() {
   # FictionServePath <from> <to:fn> <as>
   echo "Added route: from '$1' to '$2' $([ -n "$3" ] && echo "as '$3'")"
   FictionRoute["$1"]="$2"
+  if [ ! -f "$serverTmpDir/.routes" ]; then
+    : >"$serverTmpDir/.routes"
+    local route="$(sha256sum <<< "$1")"
+    local funcname="$(base64 <<< "$2")"
+    __e "${route::-3} $funcname" "$serverTmpDir/.routes"
+    unset ou route funcname
+  else 
+    local ou="$(__d "$serverTmpDir/.routes")"
+    local route="$(sha256sum <<< "$1")"
+    local funcname="$(base64 <<< "$2")"
+    ou+=$'\n'"${route::-3} $funcname" 
+    __e "$ou" "$serverTmpDir/.routes"
+    unset ou route funcname
+  fi
   FictionRouteContentType["$1"]="$3"
 }
 
@@ -532,7 +555,7 @@ function FictionServeDir() {
 # Init HttpLib
 
 function generate_csrf_token() {
-  local tok="$(head -c 32 /dev/urandom | sha256sum)"
+  local tok="$(uuidgen | sha256sum)"
   printf "%s" "${tok::-2}"
 }
 
@@ -542,6 +565,7 @@ function generate_session_id() {
 
 function FictionRequestHandler() {
   # Don't allow going out of DOCUMENT_ROOT
+  echo "g $REQUEST_PATH|${!FictionRoute[@]}" >&2
   case "$REQUEST_PATH" in
   *".."* | *"~"*)
     httpSendStatus 404
@@ -553,16 +577,8 @@ function FictionRequestHandler() {
   [ "${REQUEST_PATH::2}" == "//" ] && REQUEST_PATH="${REQUEST_PATH:1}"
   [ "${REQUEST_PATH::1}" != "/" ] && REQUEST_PATH="/${REQUEST_PATH}" # BUG wtf
   if [[ -n "${FictionRoute["$REQUEST_PATH"]}" ]]; then
-    if [[ "$REQUEST_PATH" =~ '_button' ]]; then 
-      if [[ -z "${HTTP_HEADERS['x-csrf-token']}" || "${HTTP_HEADERS['x-csrf-token']}" != "${ROUTES["${COOKIE['session_id']}"]}" ]]; then
-        httpSendStatus 401 
-        sendError "401 Prohibited"
-      else 
-        ${FictionRoute["${REQUEST_PATH}"]}
-      fi
-    else 
-      ${FictionRoute["${REQUEST_PATH}"]}
-    fi
+    ${FictionRoute["${REQUEST_PATH}"]}
+
   elif [[ ${#FictionDynamicRoute[@]} > 0 ]]; then
     local matching_slugs=0
     IFS='/' read -ra path_keys <<<"${REQUEST_PATH#\/}"
@@ -583,12 +599,32 @@ function FictionRequestHandler() {
       done
       ((matching_slugs > 0)) && IS_DYNAMIC_ROUTE=true && $funcname
     done
+  elif [ -f "$serverTmpDir/.routes" ]; then
+    local csrf=$(sessionGet "${COOKIE['session_id']}")
+    if [[ "$REQUEST_PATH" =~ '__server-action' ]] && [[ -z "${HTTP_HEADERS['x-csrf-token']}" || "${HTTP_HEADERS['x-csrf-token']}" != "$csrf" ]]; then
+      httpSendStatus 401 
+      sendError "401 Prohibited"
+      return
+    fi
+    local r f r1 f1 m=false
+    r1=$(echo "$REQUEST_PATH" | sha256sum)
+    ou=$(__d "$serverTmpDir/.routes" | grep "${r1::-3}")
+    [ -n "$ou" ] && IFS=' ' read r f <<< "$ou" || { httpSendStatus 404; sendError "401 Prohibited"; return; }
+    [[ "${r1::-3}" == "$r" ]] || { httpSendStatus 404; sendError "401 Prohibited"; return; }
+    f1=$(base64 -d <<< "$f")
+    "$f1"
   else
     httpSendStatus 404
     sendError "404 Page Not Found"
   fi
 }
 
+
+
+if [[ -z "$serverTmpDir" ]]; then
+    export serverTmpDir="$(mktemp -d)"
+    # export TMPDIR="/tmp"
+fi
 
 function FictionHttpServer() {
   # FictionHttpServer <port>
@@ -672,11 +708,6 @@ function FictionHttpServer() {
 
   # setup
   export run="FictionRequestHandler"
-  [ -d /tmp/tmp.* ] && rm -r /tmp/tmp\.* 2>/dev/null
-  if [[ -z "$serverTmpDir" ]]; then
-    export serverTmpDir="$(mktemp -d)"
-    # export TMPDIR="/tmp"
-  fi
 
   # create worker
   declare -A >"$serverTmpDir/worker.sh"
@@ -694,19 +725,21 @@ function FictionHttpServer() {
    -e 's+(/ruby)+echo "</ruby>"+g' >>"$serverTmpDir/worker.sh"
 
   echo "parseAndPrint" >>"$serverTmpDir/worker.sh"
+ # echo '[[ -d "$serverTmpDir" ]] && rm -r "$serverTmpDir"' >>"$serverTmpDir/worker.sh"
   chmod +x "$serverTmpDir/worker.sh"
   cat >"$serverTmpDir/job.sh" <<EOF
 #!/bin/bash
 HEADERS=""
 while read -r val; do
-  HEADERS+="\${val//$'\r'/}"
+  HEADERS+="\${val//$'\r'/}"$'\n'
   if [ "\${#val}" == "1" ]; then
     break
   fi
 done
-echo "\$HEADERS" | bash $serverTmpDir/worker.sh
+echo "\$HEADERS" | exec -a "fiction-worker" bash $workerargs $serverTmpDir/worker.sh
 EOF
   chmod +x "$serverTmpDir/job.sh"
+  trap clean EXIT
   if "${HTTPS:=false}"; then 
     [[ "$port" = 443 ]] && echo -e "\nServing your webserver at https://$address" || echo -e "\nServing your webserver at https://$address:$port"
     exec -a "fiction" socat openssl-listen:"$HTTP_PORT",bind="$BIND_ADDRESS",verify=0,cert="$SSL_CERT",key="$SSL_KEY",reuseaddr,fork SYSTEM:"$serverTmpDir/job.sh"
