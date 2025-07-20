@@ -78,6 +78,11 @@ function @cache() {
     local CACHE_DATA="echo \"$(eval $(declare -f "$1" | sed -n "${CACHEBLOCK_BEGIN},${CACHEBLOCK_END}p") | sed 's+"+\\\\"+g')\""
     eval "$(declare -f "$1" | awk -v start="$(($CACHEBLOCK_BEGIN - 1))" -v end="$(($CACHEBLOCK_END + 1))" -v r="$CACHE_DATA" 'NR < start { print; next } NR == start { split(r, a, "\n"); for (i in a) print a[i]; next } NR > end')"
   done
+
+  if [ -z "$DO_NOT_RERUN" ] && [ -n "$(declare -F "\\$1")" ]; then
+    DO_NOT_RERUN=1 @cache "\\$1"
+    return
+  fi
 }
 
 function @prerender {
@@ -86,8 +91,7 @@ function @prerender {
   local PRERENDER_DATA="$1(){ echo \"$(eval "$1" | sed 's+"+\\"+g')\"; }"
   eval "$PRERENDER_DATA"
   if [ -n "$(declare -F "\\$1")" ]; then
-    @cache "\\$1" # just in case
-    PRERENDER_DATA="\\$1(){ echo \"$(eval "\\$1" | sed 's+"+\\"+g')\"; }"
+    PRERENDER_DATA="\\$1(){ echo \"$(eval "\\$1" | sed -e 's+"+\\"+g')\"; }"
     eval "$PRERENDER_DATA"
   fi
 }
@@ -661,6 +665,31 @@ function FictionHttpServer() {
   else
     [[ "$port" = 80 ]] && echo -e "\nServing your webserver at http://$address" || echo -e "\nServing your webserver at http://$address:$port"
   fi
-  main fiction
 
+  # setup
+  export run="FictionRequestHandler"
+  if [[ ! -d "$serverTmpDir" || -z "$serverTmpDir" ]]; then
+    export serverTmpDir="$(mktemp -d)"
+    # export TMPDIR="/tmp"
+  fi
+
+  # create worker
+  declare -A >"$serverTmpDir/worker.sh"
+  declare -a >>"$serverTmpDir/worker.sh"
+  declare >>"$serverTmpDir/worker.sh"
+  echo "parseAndPrint" >>"$serverTmpDir/worker.sh"
+  chmod +x "$serverTmpDir/worker.sh"
+  cat >"$serverTmpDir/job.sh" <<EOF
+#!/bin/bash
+HEADERS=""
+while read -r val; do
+  HEADERS+="\${val//$'\r'/}"
+  if [ "\${#val}" == "1" ]; then
+    break
+  fi
+done
+echo "\$HEADERS" | bash $serverTmpDir/worker.sh 2>/dev/null
+EOF
+  chmod +x "$serverTmpDir/job.sh"
+  socat TCP-LISTEN:8080,reuseaddr,fork SYSTEM:"$serverTmpDir/job.sh"
 }
