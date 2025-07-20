@@ -1,7 +1,7 @@
 #!/bin/bash
 # The Fiction(R) Library!
 # Configurations
-FICTION_HTML_ELEMENTS="h1 h2 h3 h4 h5 h6 p a img ul ol li div span table tr td th thead tbody tfoot form input textarea button option label br hr em strong i b u s sub sup code pre blockquote article section nav header footer aside main details summary dialog figure figcaption audio video track canvas svg iframe object embed param meta link script style title base head body html doctype noscript template slot picture srcset map area tracktime datalist fieldset legend output progress meter menu command keygen mark ruby rt rp wbr bdi bdo abbr address cite dfn ins del kbd samp var" # thanks gemini
+FICTION_HTML_ELEMENTS="h1 h2 h3 h4 h5 h6 p a img ul ol li div span table td th thead tbody tfoot form input textarea button option label br hr em strong i b u s sub sup code pre blockquote article section nav header footer aside main details summary dialog figure figcaption audio video track canvas svg iframe object embed param meta link script style title base body html doctype noscript template slot picture srcset map area tracktime datalist fieldset legend output progress meter menu mark rt rp wbr bdi bdo abbr address cite dfn ins del kbd samp var" # thanks gemini
 
 # Http Server
 FICTION_HTTP_ERROR_BEGIN="<html style='font-family:sans-serif;'><title>Error</title><center>"
@@ -11,8 +11,8 @@ FICTION_HTTP_ERROR_END="<hr><p>Fiction Web Server</h1></center></html>"
 # Helper functions
 function fiction_sanitize_html() {
   # https://stackoverflow.com/a/12873723
-  [[ ! "$@" =~ '%'|'<'|'>'|\"|\' ]] && printf "$@" && return
-  printf "$@" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g; s/'"'"'/\&#39;/g'
+  [[ ! "$@" =~ '%'|'<'|'>'|\"|\' ]] && printf "%s" "$@" && return
+  printf "%s" "$@" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g; s/'"'"'/\&#39;/g'
   #local string="${@//\%/&amp;}"
   #string="${string//</&lt;}"
   #string="${string//>/&gt;}"
@@ -49,6 +49,14 @@ function fiction_closing_element() {
 
 function str() {
   fiction_sanitize_html "$@"
+}
+
+function @parse {
+  for arg in $@; do 
+    IFS='=' read key value <<< "${arg##;}"; 
+    [ -z "$key" ] && continue
+    printf -v $key "%s" "$value"
+  done
 }
 
 function @wrapper() {
@@ -137,11 +145,23 @@ function import() {
   fi
 }
 
+
 # -- Init
 # Generate HTML Element fn wrappers
 for elem in $FICTION_HTML_ELEMENTS; do
   eval "${elem}() { fiction_element ${elem} \"\$@\"; }; /${elem}() { fiction_closing_element ${elem} \"\$@\"; }"
 done
+
+function testcmd {
+  [[ "$state" == "show" ]] && echo "hide" || echo "show"
+}
+
+function testButton() {
+  FictionServePath "/_button${RANDOM}" "testcmd" "plain-text" >&2
+  (button onclick="fetch('/_button${RANDOM}',{method:'POST',headers:{'X-CSRF-Token':document.querySelector('meta[name=csrf-token]').content}}).then(r=>r.text()).then(t=>document.getElementById('target').style.display=t.trim()=='show'?'':'none')")
+  str "Toggle Div"
+(/button)
+}
 
 # ---- END OF HTML LIBRARY ----
 declare -A FictionRoute
@@ -194,6 +214,7 @@ httpSendStatus() {
 
 buildResponse() {
   httpSendStatus "$1"
+  local filename=''
   [[ $1 == 401 ]] &&
     {
       HTTP_RESPONSE_HEADERS['WWW-Authenticate']="Basic realm=WebServer"
@@ -208,34 +229,63 @@ buildResponse() {
       done
       return
     }
-
-  [ -f "$serverTmpDir/output" ] && rm "$serverTmpDir/output"
-  "$run" >"$serverTmpDir/output"
+  filename="$serverTmpDir/output_$RANDOM"
+  [ -f "$filename" ] && rm "$filename"
+  "$run" >"$filename"
   if [[ -z "${FictionRouteContentType["${REQUEST_PATH}"]}" || "${FictionRouteContentType["${REQUEST_PATH}"]}" == "auto" ]]; then
-    local filename=''
-    type="$(file --mime "$serverTmpDir/output")" charset=''
-    IFS=' ' read filename type charset <<<"$type"
+    local trash charset type="$(file --mime "$filename")"
+    IFS=' ' read trash type charset <<<"$type"
     which file 2>&1 >/dev/null && HTTP_RESPONSE_HEADERS["content-type"]="${type//;/}"
   else
     HTTP_RESPONSE_HEADERS["content-type"]="${FictionRouteContentType["${REQUEST_PATH}"]:-html}"
   fi
-  HTTP_RESPONSE_HEADERS["content-length"]="$(wc -c <"$serverTmpDir/output")"
+
   printf '%s %s\n' "HTTP/1.1" "${HTTP_RESPONSE_HEADERS["status"]}"
-  unset 'HTTP_RESPONSE_HEADERS["status"]'
+#  unset 'HTTP_RESPONSE_HEADERS["status"]'
 
   for value in "${cookie_to_send[@]}"; do
     printf 'Set-Cookie: %s\n' "$value"
   done
-  for key in "${!HTTP_RESPONSE_HEADERS[@]}"; do
-    printf '%s: %s\n' "${key,,}" "${HTTP_RESPONSE_HEADERS[$key]}"
-  done
-  printf "\n"
-  # printf '%s\n' "$(<"$serverTmpDir/output")"
-  cat "$serverTmpDir/output"
+  # printf '%s\n' "$(<"$filename")"
+  if [[ "${HTTP_RESPONSE_HEADERS["content-type"]}" =~ html ]]; then 
+    local isdoctype=false ishtml=false isbody=false iscbody=false ishead=false ischtml=false ischead=false
+
+    [[ "$output" =~ '<!DOCTYPE html>' ]] && isdoctype=true
+    [[ "$output" =~ \<html ]] && { ishtml=true; [[ "$output" =~ '</html>' ]] && ischtml=true; }
+    [[ "$output" =~ \<body ]] && { isbody=true; [[ "$output" =~ '</body>' ]] && iscbody=true; }
+    [[ "$output" =~ '<head>' ]] && { ishead=true; [[ "$output" =~ '</head>' ]] && ischead=true; }
+    ! "$isdoctype" &&  sed -i "1s|^|<!DOCTYPE html>|" "$filename"
+    ! "$ishtml" && sed -i "1s|^|<html>|" "$filename"
+    [ -n "${SESSIONS["$SESSION_ID"]}" ] && {
+      "$ishead" && sed -i "s|<head>|<head><meta name='csrf-token' content='${SESSIONS["$SESSION_ID"]}'>|" "$filename" || \
+                   sed -i "s|<html>|<html><head><meta name='csrf-token' content='${SESSIONS["$SESSION_ID"]}'></head>|" "$filename";
+      ! "$ischead" && "$isbody" && sed -i "s|</head>" "$filename";
+    }
+    ! "$isbody" && "$ischead" && sed -i "s|</head>|<body>" "$filename"
+    ! "$iscbody" && printf "</body>" >>"$filename"
+    ! "$ischtml" && printf "</html>" >>"$filename"
+    read size filename < <(wc -c "$filename")
+    HTTP_RESPONSE_HEADERS["content-length"]="${size:=0}"
+    for key in "${!HTTP_RESPONSE_HEADERS[@]}"; do
+      printf '%s: %s\n' "${key,,}" "${HTTP_RESPONSE_HEADERS[$key]}"
+    done
+    printf "\n"
+    cat "$filename"
+  else 
+    read size filename < <(wc -c "$filename")
+    HTTP_RESPONSE_HEADERS["content-length"]="${size:=0}"
+    for key in "${!HTTP_RESPONSE_HEADERS[@]}"; do
+      printf '%s: %s\n' "${key,,}" "${HTTP_RESPONSE_HEADERS[$key]}"
+    done
+    printf "\n"
+    cat "$filename"
+  fi
   printf "\n"
 }
 
+
 parseAndPrint() {
+  verbose=true
   # We will alway reset all variables and build them again
   local REQUEST_METHOD REQUEST_PATH HTTP_VERSION QUERY_STRING
   local -A HTTP_HEADERS
@@ -243,26 +293,27 @@ parseAndPrint() {
   local -A GET
   local -A HTTP_RESPONSE_HEADERS
   local -A COOKIE
-  local -A SESSION
+  local -A SESSIONS
   local -a cookie_to_send
-
+  
   # Now mktemp will write create files inside the temporary directory
   local -r TMPDIR="$serverTmpDir"
   # Parse Request
   read -r REQUEST_METHOD REQUEST_PATH HTTP_VERSION
   HTTP_VERSION="${HTTP_VERSION%%$'\r'}"
+  [[ "$HTTP_VERSION" =~ HTTP/[0-9]\.?[0-9]? ]] && HTTP_VERSION="${BASH_REMATCH[0]}"
   [[ -z "$REQUEST_METHOD" || -z "$REQUEST_PATH" ]] && return
 
-  local line _h _v
+  local line _h
   while read -r line; do
     line="${line%%$'\r'}"
     [[ -z "$line" ]] && break
     _h="${line%%:*}"
+    echo "$_h: ${line#*: }" >&2
     HTTP_HEADERS["${_h,,}"]="${line#*: }"
   done
-  unset line _h _v
+  unset line _h
 
-  echo "${HTTP_HEADERS[@]}" >&2
   local entry
   IFS='?' read -r REQUEST_PATH get <<<"$REQUEST_PATH"
   get="$(urldecode "$get")"
@@ -279,37 +330,44 @@ parseAndPrint() {
 
   local -a cookie
   local key value
-  IFS=';' read -ra cookie <<<"${HTTP_HEADERS["Cookie"]}"
-
-  for entry in "${cookie[@]}"; do
+  IFS=';' read -ra cookie <<<"${HTTP_HEADERS["cookie"]}"
+  [ -n "${HTTP_HEADERS["Cookie"]}" ] && ((${cookie[@]} < 1 )) && cookie+=( ${HTTP_HEADERS["cookie"]//;} )
+  for entry in ${cookie[@]}; do
     IFS='=' read -r key value <<<"$entry"
-    COOKIE["${key# }"]="${value% }"
+    [[ "$key" ]] && COOKIE["$key"]="${value}"
   done
   unset entry cookie key value
-
-  if [[ -z "${COOKIE["$SESSION_COOKIE"]}" ]]; then
-    SESSION_ID="$(uuidgen)"
+  if [[ -z "${COOKIE["session_id"]}" ]]; then
+    SESSION_ID="$(generate_session_id)"
+    SESSIONS["$SESSION_ID"]="$(generate_csrf_token)"
+    cookieSet "session_id=$SESSION_ID; max-age=5000"
   else
-    SESSION_ID="${COOKIE["$SESSION_COOKIE"]}"
+    SESSION_ID="${COOKIE["session_id"]}"
+    if [[ -z "${SESSIONS["$SESSION_ID"]}" ]]; then 
+      SESSION_ID="$(generate_session_id)"
+      SESSIONS["$SESSION_ID"]="$(generate_csrf_token)"
+      cookieSet "session_id=$SESSION_ID; max-age=5000"
+    fi
   fi
   # Parse post data only if length is > 0 and post is specified
   # bash (( will not fail if var is not a number, it will just return 1, no need of int check
-  if [[ "$REQUEST_METHOD" == "POST" ]] && ((${HTTP_HEADERS['Content-Length']} > 0)); then
+  if [[ "$REQUEST_METHOD" == "POST" ]] && ((${HTTP_HEADERS['content-length']:=0} > 0)); then
     local entry
-    if [[ "${HTTP_HEADERS["Content-type"]}" == "application/x-www-form-urlencoded" ]]; then
+    if [[ "${HTTP_HEADERS["content-type"]}" == "application/x-www-form-urlencoded" ]]; then
       IFS='&' read -rN "${HTTP_HEADERS["Content-Length"]}" -a data
       for entry in "${data[@]}"; do
         entry="${entry%%$'\r'}"
         POST["${entry%%=*}"]="${entry#*:}"
       done
     else
-      read -rN "${HTTP_HEADERS["Content-Length"]}" data
+      read -rN "${HTTP_HEADERS["content-length"]}" data
       POST["raw"]="${data%%$'\r'}"
     fi
     unset entry
   fi
 
   buildResponse 200
+  "${verbose:=false}" && echo "[$(date)] $HTTP_VERSION $REQUEST_METHOD $REQUEST_PATH ${HTTP_RESPONSE_HEADERS['status']}" >&2
 }
 
 basicAuth() {
@@ -401,71 +459,6 @@ clean() {
   [[ -n "$serverTmpDir" && -d "$serverTmpDir" ]] && rm -rf "$serverTmpDir"
 }
 
-main() {
-  : "${HTTPS:=false}"
-  : "${SSL_KEY:=key.pem}"
-  : "${SSL_CERT:=cert.pem}"
-  : "${HTTP_PORT:=8080}"
-  : "${BIND_ADDRESS:=127.0.0.1}"
-  : "${TMPDIR:=/tmp}"
-  : "${LOGFORMAT:="[%t] - %a %m %U %s %b %T"}"
-  : "${LOGFILE:=access.log}"
-  : "${LOGGING:=1}"
-  : "${SESSION_COOKIE:=BASHSESSID}"
-  : "${BASIC_AUTH:=0}"
-  TMPDIR="${TMPDIR%/}"
-
-  ! [[ ${BIND_ADDRESS} == "0.0.0.0" ]] && acceptArg="-b ${BIND_ADDRESS}"
-
-  enable -f accept accept || {
-    printf '%s\n' "Cannot load accept..."
-    exit 1
-  }
-  enable -f "mktemp" mktemp &>/dev/null || true
-  enable -f "rm" rm &>/dev/null || true
-  enable -f "finfo" finfo &>/dev/null || true
-
-  trap clean EXIT
-
-  run="FictionRequestHandler"
-  if [[ ! -d "$serverTmpDir" || -z "$serverTmpDir" ]]; then
-    export serverTmpDir="$(mktemp -d)"
-    # export TMPDIR="/tmp"
-  fi
-  if "$HTTPS"; then
-    kill -0 "$_pid" 2>/dev/null && kill -9 "$_pid"
-    coproc https_proc { exec -a "fiction" socat openssl-listen:"$HTTP_PORT",bind="$BIND_ADDRESS",verify=0,cert="$SSL_CERT",key="$SSL_KEY",reuseaddr,fork STDIO; }
-    _pid="$https_proc_PID"
-    local i=1
-    local headers=""
-    while read -u ${https_proc[0]} data; do
-      headers+="$data"
-      if [[ "${#data}" == "1" ]]; then
-        parseAndPrint <<<"$headers" >&${https_proc[1]}
-        headers=""
-        rm -rf "$serverTmpDir"
-        serverTmpDir="$(mktemp -d)"
-      fi
-    done
-    kill -9 "$_pid"
-  else
-    while :; do
-      # author tried to implement multi-connection support by using subshells in the background, but it's very ineffective to use "until ... do true", as it makes dozens of system calls to filesystem
-      accept -b "${BIND_ADDRESS}" "${HTTP_PORT}" || {
-        printf '%s\n' "Could not listen on ${BIND_ADDRESS}:${HTTP_PORT}"
-        exit 1
-      }
-      parseAndPrint <&${ACCEPT_FD} >&${ACCEPT_FD}
-      exec {ACCEPT_FD}>&-
-      rm -rf "$serverTmpDir"
-      serverTmpDir="$(mktemp -d)"
-
-      # remove the temporary directory
-
-    done
-  fi
-}
-
 # --- END OF https://github.com/dzove855/Bash-web-server/ ---
 function getQuery() {
   [ -z "$1" ] && return
@@ -537,9 +530,13 @@ function FictionServeDir() {
 # Init HttpLib
 
 function generate_csrf_token() {
-  head /dev/urandom | tr -dc 'A-Za-z0-9' | head -c48
+  local tok="$(head -c 32 /dev/urandom | sha256sum)"
+  printf "%s" "${tok::-2}"
 }
 
+function generate_session_id() {
+  /usr/bin/head -c 32 /dev/urandom | base64 | tr -dc 'A-Za-z0-9'
+}
 
 function FictionRequestHandler() {
   # Don't allow going out of DOCUMENT_ROOT
@@ -554,7 +551,16 @@ function FictionRequestHandler() {
   [ "${REQUEST_PATH::2}" == "//" ] && REQUEST_PATH="${REQUEST_PATH:1}"
   [ "${REQUEST_PATH::1}" != "/" ] && REQUEST_PATH="/${REQUEST_PATH}" # BUG wtf
   if [[ -n "${FictionRoute["$REQUEST_PATH"]}" ]]; then
-    ${FictionRoute["${REQUEST_PATH}"]}
+    if [[ "$REQUEST_PATH" =~ '_button' ]]; then 
+      if [[ -z "${HTTP_HEADERS['x-csrf-token']}" || "${HTTP_HEADERS['x-csrf-token']}" != "${ROUTES["${COOKIE['session_id']}"]}" ]]; then
+        httpSendStatus 401 
+        sendError "401 Prohibited"
+      else 
+        ${FictionRoute["${REQUEST_PATH}"]}
+      fi
+    else 
+      ${FictionRoute["${REQUEST_PATH}"]}
+    fi
   elif [[ ${#FictionDynamicRoute[@]} > 0 ]]; then
     local matching_slugs=0
     IFS='/' read -ra path_keys <<<"${REQUEST_PATH#\/}"
@@ -580,6 +586,7 @@ function FictionRequestHandler() {
     sendError "404 Page Not Found"
   fi
 }
+
 
 function FictionHttpServer() {
   # FictionHttpServer <port>
@@ -660,6 +667,7 @@ function FictionHttpServer() {
       ;;
     esac
   done
+<<<<<<< Updated upstream
   if "${HTTPS:=false}"; then
     [[ "$port" = 443 ]] && echo -e "\nServing your webserver at https://$address" || echo -e "\nServing your webserver at https://$address:$port"
   else
@@ -669,14 +677,37 @@ function FictionHttpServer() {
   # setup
   export run="FictionRequestHandler"
   if [[ ! -d "$serverTmpDir" || -z "$serverTmpDir" ]]; then
+=======
+
+  # setup
+  export run="FictionRequestHandler"
+  [ -d /tmp/tmp.* ] && rm -r /tmp/tmp\.* 2>/dev/null
+  if [[ -z "$serverTmpDir" ]]; then
+>>>>>>> Stashed changes
     export serverTmpDir="$(mktemp -d)"
     # export TMPDIR="/tmp"
   fi
 
   # create worker
   declare -A >"$serverTmpDir/worker.sh"
+<<<<<<< Updated upstream
   declare -a >>"$serverTmpDir/worker.sh"
   declare >>"$serverTmpDir/worker.sh"
+=======
+  declare -a | grep -vE '(BASH_VERSINFO)'  >>"$serverTmpDir/worker.sh"
+  declare | \
+  grep -vE '(SSH_|^PWD|^OLDPWD|^TERM|^HOME|^USER|^PATH|BASH_VERSINFO|^BASHOPTS|^EUID|^PPID|^SHELLOPTS|^UID)' | \
+  sed \
+   -e 's+(head+(fiction_element head+g' \
+   -e 's+(/head)+echo "</head>"+g' \
+   -e 's+(tr+(fiction_element tr+g' \
+   -e 's+(/tr)+echo "</tr>"+g' \
+   -e 's+(command+(fiction_element command+g' \
+   -e 's+(/command)+echo "</command>"+g' \
+   -e 's+(ruby+(fiction_element ruby+g' \
+   -e 's+(/ruby)+echo "</ruby>"+g' >>"$serverTmpDir/worker.sh"
+
+>>>>>>> Stashed changes
   echo "parseAndPrint" >>"$serverTmpDir/worker.sh"
   chmod +x "$serverTmpDir/worker.sh"
   cat >"$serverTmpDir/job.sh" <<EOF
@@ -688,8 +719,24 @@ while read -r val; do
     break
   fi
 done
+<<<<<<< Updated upstream
 echo "\$HEADERS" | bash $serverTmpDir/worker.sh 2>/dev/null
 EOF
   chmod +x "$serverTmpDir/job.sh"
   socat TCP-LISTEN:8080,reuseaddr,fork SYSTEM:"$serverTmpDir/job.sh"
+=======
+echo "\$HEADERS" | bash $serverTmpDir/worker.sh
+EOF
+  chmod +x "$serverTmpDir/job.sh"
+  if "${HTTPS:=false}"; then 
+    [[ "$port" = 443 ]] && echo -e "\nServing your webserver at https://$address" || echo -e "\nServing your webserver at https://$address:$port"
+    exec -a "fiction" socat openssl-listen:"$HTTP_PORT",bind="$BIND_ADDRESS",verify=0,cert="$SSL_CERT",key="$SSL_KEY",reuseaddr,fork SYSTEM:"$serverTmpDir/job.sh"
+  else 
+    trap clean EXIT
+    [[ "$port" = 80 ]] && echo -e "\nServing your webserver at http://$address" || echo -e "\nServing your webserver at http://$address:$port"
+    exec -a "fiction" socat TCP-LISTEN:$HTTP_PORT,bind="$BIND_ADDRESS",reuseaddr,fork SYSTEM:"$serverTmpDir/job.sh"
+  fi
+  trap clean EXIT
+  clean
+>>>>>>> Stashed changes
 }
