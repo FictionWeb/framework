@@ -6,7 +6,7 @@ FICTION_HTML_ELEMENTS="h1 h2 h3 h4 h5 h6 p a img ul ol li div span table td th t
 # Http Server
 FICTION_HTTP_ERROR_BEGIN="<html style='font-family:sans-serif;'><title>Error</title><center>"
 FICTION_HTTP_ERROR_END="<hr><p>Fiction Web Server</h1></center></html>"
-workerargs="-x"
+workerargs=""
 # Helper functions
 function fiction_sanitize_html() {
   # https://stackoverflow.com/a/12873723
@@ -30,6 +30,13 @@ function fiction_element() {
     if [[ "$arg" == *"="* ]]; then
       # Do sanitization
       IFS='=' read -r key value <<<"$arg"
+      if [[ "${key,,}" =~ onclick ]]; then 
+        IFS=' ' read -r cmd _ <<< "$value"
+        if type "$cmd" &>/dev/null; then
+          local name="$(addServerAction "$value")"
+          value="fetch('$name',{method:'POST',headers:{'X-CSRF-Token':document.querySelector('meta[name=csrf-token]').content}})"
+        fi
+      fi
       fiction_sanitize_html "$key=" # by html standards, key musn't have quotes
 
       echo -n '"'
@@ -89,7 +96,7 @@ function @cache() {
   if [ -z "$DO_NOT_RERUN" ] && [ -n "$(declare -F "\\$1")" ]; then
     DO_NOT_RERUN=1 @cache "\\$1"
     return
-  fi
+  fi 
 }
 
 function @prerender {
@@ -101,6 +108,14 @@ function @prerender {
     PRERENDER_DATA="\\$1(){ echo \"$(eval "\\$1" | sed -e 's+"+\\"+g')\"; }"
     eval "$PRERENDER_DATA"
   fi
+}
+
+function addServerAction() {
+  [ -z "$1" ] && return 
+  local path="/__server-action_$(openssl rand -hex 10)"
+  FictionServePath "$path" "$1" "" >/dev/null
+  [[ $? == 0 ]] && echo "$path" || return 
+  unset path
 }
 
 function import() {
@@ -144,6 +159,15 @@ function import() {
   fi
 }
 
+function @jsFunction {
+  local invoke="$2"
+  [ -z "$(declare -F "$1")" ] && return
+  funccontents=$(declare -f "$1")
+  "${invoke:=false}" && funccontents=$(echo "${funccontents}" | sed -e "s+{+{\n printf '(() => {'+" -e "s+\(.*\)}+\1  printf '})()'; }+" ) || \
+                        funccontents=$(echo "${funccontents}"  | sed -e "s+{+{\n printf '() => {'+" -e "s+\(.*\)}+\1  printf '}' };+" )
+  eval "$funccontents"
+}
+
 
 # -- Init
 # Generate HTML Element fn wrappers
@@ -151,16 +175,31 @@ for elem in $FICTION_HTML_ELEMENTS; do
   eval "${elem}() { fiction_element ${elem} \"\$@\"; }; /${elem}() { fiction_closing_element ${elem} \"\$@\"; }"
 done
 
-function testcmd {
-  [[ "$state" == "show" ]] && echo "hide" || echo "show"
+function reloadPage() {
+  printf "window.location.reload();"
+}
+
+function alert() {
+  printf "%s" "alert('$@'); "
+}
+
+function editElement() {
+  local id="$1"
+  local attributes="$2"
+  local content="$3"
+  local delay="$4"
+  [ -n "$delay" ] && printf "setTimeout(() => { "
+ #() => { 
+  printf "%s" "const el = document.getElementById('$id');if (!el) return; $([ -n "${attributes}" ] && echo "'$attributes'.split(' ').forEach(pair => { const [key, val] = pair.split('='); if (key && val) el.setAttribute(key, val);});") el.innerHTML = '${content}'; "
+
+ [ ! -z "$delay" ] && printf "}, '%s');" "$delay"
 }
 
 function testButton() {
   local name=${RANDOM}
-  id="$1"
-  FictionServePath "/__server-action$name" "testcmd" "plain-text" >&2
-  echo "${!FictionRoute[@]}" >&2
-  (button onclick="fetch('/__server-action$name',{method:'POST',headers:{'X-CSRF-Token':document.querySelector('meta[name=csrf-token]').content}}).then(r=>r.text()).then(t=>document.getElementById('$id').style.display=t.trim()=='show'?'':'none')")
+  #FictionServePath "/__server-action$name" "" "text/plain" >&2
+  #(button onclick="fetch('/__server-action$name',{method:'POST',headers:{'X-CSRF-Token':document.querySelector('meta[name=csrf-token]').content}})")
+  (button onclick="$1")
   str "Toggle Div"
 (/button)
 }
@@ -236,9 +275,10 @@ buildResponse() {
   [ -f "$filename" ] && rm "$filename"
   "$run" >"$filename"
   if [[ -z "${FictionRouteContentType["${REQUEST_PATH}"]}" || "${FictionRouteContentType["${REQUEST_PATH}"]}" == "auto" ]]; then
-    local trash charset type="$(file --mime "$filename")"
-    IFS=' ' read trash type charset <<<"$type"
+    local _ char type="$(file --mime "$filename")"
+    IFS=' ' read _ type char <<<"$type"
     which file 2>&1 >/dev/null && HTTP_RESPONSE_HEADERS["content-type"]="${type//;/}"
+    unset _ type char
   else
     HTTP_RESPONSE_HEADERS["content-type"]="${FictionRouteContentType["${REQUEST_PATH}"]:-html}"
   fi
@@ -289,7 +329,6 @@ buildResponse() {
 __x4gT9q6=( "$(openssl rand -hex 32)" "$(openssl rand -hex 16)" );
 parseAndPrint() {
   verbose=true
-  # We will alway reset all variables and build them again
   local REQUEST_METHOD REQUEST_PATH HTTP_VERSION QUERY_STRING
   local -A HTTP_HEADERS
   local -A POST
@@ -299,9 +338,6 @@ parseAndPrint() {
   local -A SESSIONS
   local -a cookie_to_send
   
-  # Now mktemp will write create files inside the temporary directory
-  local -r TMPDIR="$serverTmpDir"
-  # Parse Request
   read -r REQUEST_METHOD REQUEST_PATH HTTP_VERSION
   HTTP_VERSION="${HTTP_VERSION%%$'\r'}"
   [[ "$HTTP_VERSION" =~ HTTP/[0-9]\.?[0-9]? ]] && HTTP_VERSION="${BASH_REMATCH[0]}"
@@ -333,7 +369,6 @@ parseAndPrint() {
   local -a cookie
   local key value
   IFS=';' read -ra cookie <<<"${HTTP_HEADERS["cookie"]}"
-  echo "cookie1: ${cookie[@]}" >&2
   [ -n "${HTTP_HEADERS["Cookie"]}" ] && ((${#cookie[@]} < 1 )) && cookie+=( ${HTTP_HEADERS["cookie"]//;} )
   for entry in ${cookie[@]}; do
     IFS='=' read -r key value <<<"$entry"
@@ -466,8 +501,9 @@ serveHtml() {
 
 clean() {
   echo "Stopping the server..."
-  [ -n "$_pid" ] && kill -0 "$_pid" 2>&1 >/dev/null && kill -9 "$_pid"
+  kill -- -$_pgid || kill $_pid
   [[ -n "$serverTmpDir" && -d "$serverTmpDir" ]] && rm -rf "$serverTmpDir"
+  exit
 }
 
 # --- END OF https://github.com/dzove855/Bash-web-server/ ---
@@ -555,17 +591,15 @@ function FictionServeDir() {
 # Init HttpLib
 
 function generate_csrf_token() {
-  local tok="$(uuidgen | sha256sum)"
-  printf "%s" "${tok::-2}"
+  openssl rand -base64 48
 }
 
 function generate_session_id() {
-  /usr/bin/head -c 32 /dev/urandom | base64 | tr -dc 'A-Za-z0-9'
+  openssl rand -hex 48
 }
 
 function FictionRequestHandler() {
   # Don't allow going out of DOCUMENT_ROOT
-  echo "g $REQUEST_PATH|${!FictionRoute[@]}" >&2
   case "$REQUEST_PATH" in
   *".."* | *"~"*)
     httpSendStatus 404
@@ -577,7 +611,8 @@ function FictionRequestHandler() {
   [ "${REQUEST_PATH::2}" == "//" ] && REQUEST_PATH="${REQUEST_PATH:1}"
   [ "${REQUEST_PATH::1}" != "/" ] && REQUEST_PATH="/${REQUEST_PATH}" # BUG wtf
   if [[ -n "${FictionRoute["$REQUEST_PATH"]}" ]]; then
-    ${FictionRoute["${REQUEST_PATH}"]}
+    IFS=' ' read func funcargs <<<"${FictionRoute["${REQUEST_PATH}"]}"
+    $func "$funcargs"
 
   elif [[ ${#FictionDynamicRoute[@]} > 0 ]]; then
     local matching_slugs=0
@@ -585,6 +620,7 @@ function FictionRequestHandler() {
     i=0
     for route in ${FictionDynamicRoute[@]}; do
       IFS=':' read route funcname <<<"$route"
+      IFS=' ' read func funcargs <<<"$funcname"
       IFS='/' read -ra route_keys <<<"${route#\/}"
       for subroute in ${route_keys[@]}; do
         if [[ $subroute =~ '[' ]]; then
@@ -597,7 +633,7 @@ function FictionRequestHandler() {
         fi
         ((i++))
       done
-      ((matching_slugs > 0)) && IS_DYNAMIC_ROUTE=true && $funcname
+      ((matching_slugs > 0)) && $func "$funcargs"
     done
   elif [ -f "$serverTmpDir/.routes" ]; then
     local csrf=$(sessionGet "${COOKIE['session_id']}")
@@ -612,7 +648,8 @@ function FictionRequestHandler() {
     [ -n "$ou" ] && IFS=' ' read r f <<< "$ou" || { httpSendStatus 404; sendError "401 Prohibited"; return; }
     [[ "${r1::-3}" == "$r" ]] || { httpSendStatus 404; sendError "401 Prohibited"; return; }
     f1=$(base64 -d <<< "$f")
-    "$f1"
+    IFS=' ' read func funcargs <<<"$f1"
+    $func "$funcargs"
   else
     httpSendStatus 404
     sendError "404 Page Not Found"
@@ -708,7 +745,10 @@ function FictionHttpServer() {
 
   # setup
   export run="FictionRequestHandler"
-
+  #local -a tmps=(/tmp/tmp.*)
+  #for tmp in ${tmps[@]}; do 
+  #  rm -r "$tmp"
+  #done
   # create worker
   declare -A >"$serverTmpDir/worker.sh"
   declare -a | grep -vE '(BASH_VERSINFO)'  >>"$serverTmpDir/worker.sh"
@@ -748,6 +788,4 @@ EOF
     [[ "$port" = 80 ]] && echo -e "\nServing your webserver at http://$address" || echo -e "\nServing your webserver at http://$address:$port"
     exec -a "fiction" socat TCP-LISTEN:$HTTP_PORT,bind="$BIND_ADDRESS",reuseaddr,fork SYSTEM:"$serverTmpDir/job.sh"
   fi
-  trap clean EXIT
-  clean
 }
