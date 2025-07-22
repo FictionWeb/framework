@@ -22,6 +22,91 @@ function fiction_sanitize_html() {
 
 # Handler
 
+function bashx { 
+  if [ -f "$1" ]; then 
+  render=$(grep -o 'render.*' "$1")
+  if [[ "$render" ]]; then
+    funcname="${render//render}"
+    isfunc=true
+    input="$(sed -n "/^[[:space:]]*\\(function[[:space:]]\\+\\)\\?${funcname# }[[:space:]]*\\(()\\)\\?[[:space:]]*{/,\$s/^[[:space:]]*//p" "$1")"
+  else  
+    input=$(cat "$1")
+  fi 
+else 
+:
+fi
+#exec >/output.shx
+if [ -n "$input" ]; then 
+input=$(echo "${input//\\n}" | sed 's|\([a-Z]\)>|\1>\n|g; s|\(</[^>]*>\)|\n\1|')
+level=0 flevel=0 inscript=false
+
+while read -r line; do 
+  [[ "$line" == '' ]] && continue
+  set -- $line
+  if [[ "${line::1}" == '<' ]]; then 
+    [[ "${line: -2}" != '/>' ]] && { [[ "${line::2}" == '</' ]] && ((level--)) || ((level++)); }
+    if echo "$line" | grep -qE '^[[:space:]]*</?([A-Z][a-zA-Z0-9]*)\b'; then
+      line="${line//\/\>}"
+      line="${line//\>}"
+      echo "${line//\<}"
+    else
+      if [[ "$1" == '<script' && "$2" =~ 'bash' ]]; then 
+        inscript=true
+      elif [[ "$inscript" == true && "$1" =~ '</script' ]]; then 
+        inscript=false
+      else 
+        echo "echo \"${line//\"/\\\"}\""
+      fi
+    fi 
+  else 
+    if ((level == 0)); then 
+      [[ "$isfunc" ]] && { if [[ "$(echo "$line" | sed -n '/^[[:space:]]*\(function[[:space:]]\+\)\?[a-zA-Z_][a-zA-Z0-9_]*[[:space:]]*\(()\)\?[[:space:]]*{[[:space:]]*$/p')" ]]; then 
+        ((flevel++)); echo "$line";
+      elif [[ "$line" == '}' ]]; then 
+        ((flevel--)); echo "$line"; ((flevel == 0)) && break
+      fi; }
+      echo "$line"
+    else 
+      [[ "$line" =~ '{@children}' ||  "$inscript" == true ]] && echo "$line" || echo "echo \"${line//\"/\\\"}\""
+    fi 
+  fi
+done <<< "${input}" | bash
+else 
+while read -r line; do 
+  [[ "$line" == '' ]] && continue
+  set -- $line
+  if [[ "${line::1}" == '<' ]]; then 
+    [[ "${line: -2}" != '/>' ]] && { [[ "${line::2}" == '</' ]] && ((level--)) || ((level++)); }
+    if echo "$line" | grep -qE '^[[:space:]]*</?([A-Z][a-zA-Z0-9]*)\b'; then
+      line="${line//\/\>}"
+      line="${line//\>}"
+      echo "${line//\<}"
+    else
+      if [[ "$1" == '<script' && "$2" =~ 'bash' ]]; then 
+        inscript=true
+      elif [[ "$inscript" == true && "$1" =~ '</script' ]]; then 
+        inscript=false
+      else 
+        echo "echo \"${line//\"/\\\"}\""
+      fi
+    fi 
+  else 
+    if ((level == 0)); then 
+      [[ "$isfunc" ]] && { if [[ "$(echo "$line" | sed -n '/^[[:space:]]*\(function[[:space:]]\+\)\?[a-zA-Z_][a-zA-Z0-9_]*[[:space:]]*\(()\)\?[[:space:]]*{[[:space:]]*$/p')" ]]; then 
+        ((flevel++)); echo "$line";
+      elif [[ "$line" == '}' ]]; then 
+        ((flevel--)); echo "$line"; ((flevel == 0)) && break
+      fi; }
+      echo "$line"
+    else 
+      [[ "$line" =~ '{@children}' ||  "$inscript" == true ]] && echo "$line" || echo "echo \"${line//\"/\\\"}\""
+    fi 
+  fi
+done | bash
+fi
+
+}
+
 function fiction_element() {
   echo -n "<${1}"
   shift
@@ -171,11 +256,12 @@ function @jsFunction {
 
 # -- Init
 # Generate HTML Element fn wrappers
-for elem in $FICTION_HTML_ELEMENTS; do
-  eval "${elem}() { fiction_element ${elem} \"\$@\"; }; /${elem}() { fiction_closing_element ${elem} \"\$@\"; }"
-done
+#for elem in $FICTION_HTML_ELEMENTS; do
+#  eval "${elem}() { fiction_element ${elem} \"\$@\"; }; /${elem}() { fiction_closing_element ${elem} \"\$@\"; }"
+#done
 
 function reloadPage() {
+
   printf "window.location.reload();"
 }
 
@@ -297,16 +383,16 @@ buildResponse() {
     [[ "$output" =~ \<html ]] && { ishtml=true; [[ "$output" =~ '</html>' ]] && ischtml=true; }
     [[ "$output" =~ \<body ]] && { isbody=true; [[ "$output" =~ '</body>' ]] && iscbody=true; }
     [[ "$output" =~ '<head>' ]] && { ishead=true; [[ "$output" =~ '</head>' ]] && ischead=true; }
-    ! "$isdoctype" &&  sed -i "1s|^|<!DOCTYPE html>|" "$filename"
-    ! "$ishtml" && sed -i "1s|<!DOCTYPE html>|<!DOCTYPE html><html>|" "$filename"
+    ! "$isdoctype" &&  sed -i "1s|^|<!DOCTYPE html>\n|" "$filename"
+    ! "$ishtml" && sed -i "1s|<!DOCTYPE html>|<!DOCTYPE html><html>|" "$filename" && ishtml=true
     local csrf=$(sessionGet "$SESSION_ID")
     [[ -n "$csrf" && ! "$statuscode" =~ 401|404 ]] && {
       "$ishead" && sed -i "s|<head>|<head><meta name='csrf-token' content='$csrf'>|" "$filename" || sed -i "s|<html>|<html><head><meta name='csrf-token' content='$csrf'></head>|" "$filename";
       ! "$ischead" && "$isbody" && sed -i "s|</head>" "$filename";
     }
-    ! "$isbody" && "$ischead" && sed -i "s|</head>|<body>" "$filename"
-    ! "$iscbody" && printf "</body>" >>"$filename"
+    ! "$isbody" && { "$ischead" && sed -i "s|</head>|</head><body>" "$filename" || sed -i "s|<html>|<html><body>" "$filename"; }
     ! "$ischtml" && printf "</html>" >>"$filename"
+        ! "$iscbody" && sed -i "s|</html>|</body></html>|" >>"$filename"
     read size filename < <(wc -c "$filename")
     HTTP_RESPONSE_HEADERS["content-length"]="${size:=0}"
     for key in "${!HTTP_RESPONSE_HEADERS[@]}"; do
@@ -789,3 +875,4 @@ EOF
     exec -a "fiction" socat TCP-LISTEN:$HTTP_PORT,bind="$BIND_ADDRESS",reuseaddr,fork SYSTEM:"$serverTmpDir/job.sh"
   fi
 }
+ [[ "$FICTION_IS_NESTED" == true ]] && export FICTION_IS_NESTED=false || { export FICTION_IS_NESTED=true; [[ "$0" =~ '.shx'|'.bashx' ]] && bashx "$0"; exit; }
