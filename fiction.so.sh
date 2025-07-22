@@ -20,50 +20,6 @@ function fiction_sanitize_html() {
   # printf "$string"
 }
 
-# Handler
-
-function fiction_element() {
-  echo -n "<${1}"
-  shift
-  for arg in "$@"; do
-    echo -n " " # very necessary
-    if [[ "$arg" == *"="* ]]; then
-      # Do sanitization
-      IFS='=' read -r key value <<<"$arg"
-      if [[ "${key,,}" =~ onclick ]]; then 
-        IFS=' ' read -r cmd _ <<< "$value"
-        if type "$cmd" &>/dev/null; then
-          local name="$(addServerAction "$value")"
-          value="fetch('$name',{method:'POST',headers:{'X-CSRF-Token':document.querySelector('meta[name=csrf-token]').content}})"
-        fi
-      fi
-      fiction_sanitize_html "$key=" # by html standards, key musn't have quotes
-
-      echo -n '"'
-      fiction_sanitize_html "$value"
-      echo -n '"' # Add quotes bc why not
-    else
-      fiction_sanitize_html "$arg"
-    fi
-  done
-  echo -ne ">"
-}
-
-function fiction_closing_element() {
-  echo -ne "</${1}>"
-}
-
-function str() {
-  fiction_sanitize_html "$@"
-}
-
-function @parse {
-  for arg in $@; do 
-    IFS='=' read key value <<< "${arg##;}"; 
-    [ -z "$key" ] && continue
-    printf -v $key "%s" "$value"
-  done
-}
 
 function @wrapper() {
   [ -z "$(declare -F "$1")" ] && return
@@ -118,91 +74,8 @@ function addServerAction() {
   unset path
 }
 
-function import() {
-  # Syntax: import <filename>  || import <filename> as <ElementAlias>
-  # import <function> from <filename> || import <function> from <filename> as <ElementAlias>
-  local name filename
-  [ -z "$name" ] && name="$1"
-  shift
-  if [[ "$1" == "as" ]]; then
-    if [ ! -f "$name" ]; then
-      echo "$name not found to import."
-      exit 1
-    fi
-    shift
-    if [ -z "$1" ]; then
-      fn_name=""${name%.*}""
-    else
-      fn_name="$1"
-    fi
-    eval "${fn_name}() { source \"$name\"; }"
-  elif [[ "$1" == "from" ]]; then
-    shift
-    filename="$1"
-    if [ ! -f "$filename" ]; then
-      echo "$name not found to import."
-      exit 1
-    fi
-    local funcout="$(sed -n '/'"$name"'.*\(\)/,/^}/p' "$filename")"
-    shift
-    if [[ "$1" == "as" ]]; then
-      shift
-      if [ -z "$1" ]; then
-        fn_name="${name%.*}"
-      else
-        fn_name="$1"
-      fi
-      eval "${funcout/$name/$fn_name}"
-    else
-      [[ -n "$funcout" ]] && eval "$funcout"
-    fi
-  fi
-}
-
-function @jsFunction {
-  local invoke="$2"
-  [ -z "$(declare -F "$1")" ] && return
-  funccontents=$(declare -f "$1")
-  "${invoke:=false}" && funccontents=$(echo "${funccontents}" | sed -e "s+{+{\n printf '(() => {'+" -e "s+\(.*\)}+\1  printf '})()'; }+" ) || \
-                        funccontents=$(echo "${funccontents}"  | sed -e "s+{+{\n printf '() => {'+" -e "s+\(.*\)}+\1  printf '}' };+" )
-  eval "$funccontents"
-}
 
 
-# -- Init
-# Generate HTML Element fn wrappers
-for elem in $FICTION_HTML_ELEMENTS; do
-  eval "${elem}() { fiction_element ${elem} \"\$@\"; }; /${elem}() { fiction_closing_element ${elem} \"\$@\"; }"
-done
-
-function reloadPage() {
-  printf "window.location.reload();"
-}
-
-function alert() {
-  printf "%s" "alert('$@'); "
-}
-
-function editElement() {
-  local id="$1"
-  local attributes="$2"
-  local content="$3"
-  local delay="$4"
-  [ -n "$delay" ] && printf "setTimeout(() => { "
- #() => { 
-  printf "%s" "const el = document.getElementById('$id');if (!el) return; $([ -n "${attributes}" ] && echo "'$attributes'.split(' ').forEach(pair => { const [key, val] = pair.split('='); if (key && val) el.setAttribute(key, val);});") el.innerHTML = '${content}'; "
-
- [ ! -z "$delay" ] && printf "}, '%s');" "$delay"
-}
-
-function testButton() {
-  local name=${RANDOM}
-  #FictionServePath "/__server-action$name" "" "text/plain" >&2
-  #(button onclick="fetch('/__server-action$name',{method:'POST',headers:{'X-CSRF-Token':document.querySelector('meta[name=csrf-token]').content}})")
-  (button onclick="$1")
-  str "Toggle Div"
-(/button)
-}
 
 # ---- END OF HTML LIBRARY ----
 declare -A FictionRoute
