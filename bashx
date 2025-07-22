@@ -22,7 +22,8 @@ while read -r line; do
   if [[ "${line::1}" == '<' ]]; then 
     [[ "${line::2}" == '</' ]] && ((level--)) || ((level++))
     if echo "$line" | grep -qE '^[[:space:]]*<([A-Z][a-zA-Z0-9]*)\b'; then
-      echo "$line"
+      line="${line//\>}"
+      echo "${line//\>}"
     else
       echo "echo \"${line//\"/\\\"}\""
     fi 
