@@ -8,6 +8,7 @@ FICTION_HTTP_ERROR_BEGIN="<html style='font-family:sans-serif;background-color:#
 FICTION_HTTP_ERROR_END="<hr><p>Fiction Web Server</h1></center></html>"
 FICTION_PATH=$(readlink -f "${BASH_SOURCE[0]//fiction.so.sh}")
 bashx_path="$FICTION_PATH/../bashx/bashx"
+default_index="index.shx"
 FICTION_META=""
 workerargs=""
 core=""
@@ -457,7 +458,11 @@ function FictionServePath() {
   # FictionServePath <from> <to:fn> <as> <type?>
   [[ -z "$1" || -z "$2" ]] && return 1
   local type="${4:-static}"
-  echo "Added ${type} route: from '$1' to '$2' ${3:+as '$3'}"
+  if [[ "$FICTION_BUILD" ]]; then 
+    [[ "$3" == text/html ]] || return
+  else 
+    echo "Added ${type} route: from '$1' to '$2' ${3:+as '$3'}"
+  fi
   case "$type" in 
         api | cgi)
             #route="$(sha256sum <<< "$1")" 
@@ -535,7 +540,7 @@ function FictionRequestHandler() {
                 REQUEST_METHOD="$REQUEST_METHOD" HTTP_X_REAL_IP="$REMOTE_ADDR" FICTION_ROUTE="$REQUEST_PATH" SCRIPT_FILENAME="$func" HTTP_USER_AGENT="${HTTP_HEADERS['user-agent']}" $func;
             else
                 [[ "$func" == 'echo' ]] && $func ${funcargs//\"/\\\"} || $func "${funcargs//\"/\\\"}";
-            fi;
+            fi
         else
             if [[ -n "$ou2" ]]; then
                 local matching_slugs=0;
@@ -578,140 +583,6 @@ function FictionRequestHandler() {
     fi
 }
 
-  function FictionHttpServer () { 
-    local origaddress="$1";
-    if [[ "$origaddress" =~ "https://" ]]; then
-        HTTPS=true;
-        origaddress="${origaddress//https:\/\//}";
-    else
-        if [[ "$origaddress" =~ "http://" ]]; then
-            origaddress="${origaddress//http:\/\//}";
-        fi;
-    fi;
-    IFS=':' read -r address port <<< "$origaddress";
-    [ -z "$port" ] && { 
-        "${HTTPS:=false}" && port=443 || port=80
-    };
-    BIND_ADDRESS="$address";
-    HTTP_PORT="$port";
-    shift;
-    if [[ "$#" > 0 ]]; then
-        for arg in "${@}";
-        do
-            IFS='=' read key value <<< "$arg";
-            [[ -z "$value" ]] && continue;
-            case "$key" in 
-                ssl)
-                    HTTPS=true
-                ;;
-                ssl_cert)
-                    [ -f "$value" ] && SSL_CERT="$value" || { 
-                        echo "ssl_cert: $value: no such file" 1>&2 && return 1
-                    }
-                ;;
-                ssl_key)
-                    [ -f "$value" ] && SSL_KEY="$value" || { 
-                        echo "ssl_key: $value: no such file" 1>&2 && return 1
-                    }
-                ;;
-                core)
-                    core="$value"
-                ;;
-                *)
-                    echo "Illegal option: $key" 1>&2;
-                    return 1
-                ;;
-            esac
-        done
-    fi
-    case "$core" in 
-        bash)
-            if "${HTTPS:=false}"; then
-                echo "HTTPS is not supported in bash mode" 1>&2;
-                exit 1;
-            else
-                [ ! -f "$FICTION_PATH/accept" ] && echo "\`accept\` is not found in $FICTION_PATH" 1>&2 && return 1;
-                enable -f "$FICTION_PATH/accept" accept;
-                set -x;
-                cat /proc/$$/cmdline;
-                echo -n fiction > /proc/self/cmdline;
-                set +x;
-                [[ "$port" = 80 ]] && echo -e "\nServing your webserver at http://$address (single connection mode)" || echo -e "\nServing your webserver at http://$address:$port (single connection mode)";
-                while true; do
-                    accept -b "$BIND_ADDRESS" -r REMOTE_ADDR "${HTTP_PORT}";
-                    if [[ $? = 0 && -n "$ACCEPT_FD" ]]; then
-                        parseAndPrint <&${ACCEPT_FD} >&${ACCEPT_FD};
-                        exec {ACCEPT_FD}>&-;
-                    else
-                        return 1;
-                    fi
-                done
-            fi
-        ;;
-        nc | netcat | ncat | socat)
-            echo "FICTION_PATH='$FICTION_PATH'" >> "$serverTmpDir/worker.sh";
-            declare | \
-            grep -vE '(SSH_|^PWD|^OLDPWD|^TERM|^HOME|^USER|^PATH|BASH_VERSINFO|^BASHOPTS|^EUID|^PPID|^SHELLOPTS|^UID)' >>"$serverTmpDir/worker.sh"
-            chmod +x "$serverTmpDir/worker.sh";
-            cat >> "$serverTmpDir/job.sh" <<EOF
-#!/bin/bash
-HEADERS=""
-while read -r val; do
-  val="\${val//$'\r'/}"
-  HEADERS+="\$val"$'\n'
-  [[ "\${val,,}" =~ 'content-length' ]] && IFS=':' read key value <<< "\${val,,}"
-  [[ "\${#val}" < 1 ]] && break
-done
-[[ "\${value// }" -gt 1 ]] && { read -rn \${value// } -t1 data; [[ \${#data} > 1 ]] && HEADERS+="\${data//$'\r'/}"$'\n'; unset key value data; }
-[[ "\$NCAT_REMOTE_ADDR" ]] && REMOTE_ADDR="\$NCAT_REMOTE_ADDR" || REMOTE_ADDR="\$FICTION_PEERADDR"
-. $workerargs $serverTmpDir/worker.sh
-parseAndPrint <<<"\$HEADERS"
-EOF
-
-            chmod +x "$serverTmpDir/job.sh";
-            trap clean EXIT;
-            echo -ne "\nServing your webserver at ";
-            case "$core" in 
-                socat)
-                    if "${HTTPS:=false}"; then
-                        [[ "$port" = 443 ]] && echo -n "https://$address" || echo -n "https://$address:$port";
-                        echo " (forking mode)";
-                        exec -a "fiction" socat openssl-listen:"$HTTP_PORT",bind="$BIND_ADDRESS",verify=0,cert="$SSL_CERT",key="$SSL_KEY",reuseaddr,fork SYSTEM:"$serverTmpDir/job.sh";
-                    else
-                        [[ "$port" = 80 ]] && echo -n "http://$address" || echo -n "http://$address:$port";
-                        echo " (forking mode)";
-                        exec -a "fiction" socat TCP-LISTEN:$HTTP_PORT,bind="$BIND_ADDRESS",reuseaddr,fork EXEC:''"$serverTmpDir"'/job.sh';
-                    fi
-                ;;
-                ncat)
-                    if "${HTTPS:=false}"; then
-                        [[ "$port" = 443 ]] && echo -n "https://$address" || echo -n "https://$address:$port";
-                        echo " (forking mode)";
-                        exec -a "fiction" ncat -klp "$HTTP_PORT" -c "$serverTmpDir/job.sh" --ssl --ssl-cert "$SSL_CERT" --ssl-key "$SSL_KEY";
-                    else
-                        [[ "$port" = 80 ]] && echo -n "http://$address" || echo -n "http://$address:$port";
-                        echo " (forking mode)";
-                        exec -a "fiction" ncat -klp "$HTTP_PORT" -c "$serverTmpDir/job.sh";
-                    fi
-                ;;
-                nc | netcat)
-                    if "${HTTPS:=false}"; then
-                        echo "HTTPS is not supported in legacy netcat mode" 1>&2;
-                        exit 1;
-                    else
-                        [[ "$port" = 80 ]] && echo -n "http://$address" || echo -n "http://$address:$port";
-                        echo " (forking mode)";
-                        nc --version 2> 1 > /dev/null && nc_path="nc.traditional" || nc_path="nc";
-                        while true; do
-                            exec -a "fiction" $nc_path -vklp "$HTTP_PORT" -e "$serverTmpDir/job.sh";
-                            echo $?;
-                        done;
-                    fi
-                ;;
-            esac
-        ;;
-    esac
-}
 function parseAndPrint() {
   time1=$(date +%s%3N)
   verbose=true
@@ -836,6 +707,7 @@ FictionServeFile ()
 }
 
 function FictionHttpServer () { 
+    [[ "$FICTION_BUILD" ]] && return
     local origaddress="$1";
     if [[ "$origaddress" =~ "https://" ]]; then
         HTTPS=true;
@@ -969,3 +841,58 @@ EOF
         ;;
     esac
 }
+
+if ! (return 0 2>/dev/null); then
+  case "$1" in 
+    run)
+      if ! declare -F bashx >/dev/null 2>&1; then
+        if [ -f "$bashx_path" ]; then 
+          BASHX_NESTED=true
+          source "$bashx_path"
+        else 
+          echo "(fiction) Error: cannot load bashx ($bashx_path)" >&2
+          exit 1
+        fi
+      fi
+      [[ "$2" ]] && default_index="$2"
+      bashx "$default_index"
+    ;;
+    build)
+      echo "Initializing build..."
+      time=$(date +%s%3N)
+      if ! declare -F bashx >/dev/null 2>&1; then
+        if [ -f "$bashx_path" ]; then 
+          BASHX_NESTED=true
+          source "$bashx_path"
+        else 
+          echo "(fiction) Error: cannot load bashx ($bashx_path)" >&2
+          exit 1
+        fi
+      fi
+      FICTION_BUILD=true
+      [[ "$2" ]] && default_index="$2"
+      BASHX_VERBOSE=true
+      bashx "$default_index"
+      [[ $? > 0 ]] && exit 
+      while read route; do
+        read type filetype route func <<< "$route";
+        echo -ne "(-) $route...\r"
+        path="fiction_compiled$route"
+        [[ "$route" ]] && mkdir -p "fiction_compiled$route"
+        read func funcargs <<< "$func";
+        ${func} ${funcargs//\"/\\\"} >"$path/$type.html" &
+        pid=$!
+        s='-\|/'; i=0; while kill -0 $pid 2>/dev/null; do i=$(((i+1)%4)); printf "\r[${s:$i:1}] $route\r"; sleep .1; done
+        wait $pid
+        exit=$?
+        [[ $exit == 0 ]] && [ -f "$path/$type.html" ] && echo "[✓] $route (${path%%\/}/${type}.html)" ||  echo "[x] $route ($exit)"
+      done < <(__d "$serverTmpDir/.routes")
+      rm -rf "$serverTmpDir"
+      echo "Done ($(($(date +%s%3N)-time))ms)"
+    ;; 
+    *)
+      echo "Invalid action: $1" >&2
+      exit 1
+    ;;
+  esac
+fi
