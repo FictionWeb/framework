@@ -1,28 +1,23 @@
 #!/bin/bash
 # The Fiction(R) Library!
-# Configurations
-#FICTION_HTML_ELEMENTS="h1 h2 h3 h4 h5 h6 p a img ul ol li div span table td th thead tbody tfoot form input textarea button option label br hr em strong i b u s sub sup code pre blockquote article section nav header footer aside main details summary dialog figure figcaption audio video track canvas svg iframe object embed param meta link script style title base body html doctype noscript template slot picture srcset map area tracktime datalist fieldset legend output progress meter menu mark rt rp wbr bdi bdo abbr address cite dfn ins del kbd samp var" # thanks gemini
-
 # Http Server
 FICTION_HTTP_ERROR_BEGIN="<html style='font-family:sans-serif;background-color:#212121;color:white;'><title>Error</title><center>"
 FICTION_HTTP_ERROR_END="<hr><p>Fiction Web Server</h1></center></html>"
-FICTION_PATH=$(readlink -f "${BASH_SOURCE[0]//fiction.so.sh}")
-bashx_path="$FICTION_PATH/../bashx/bashx"
+FICTION_PATH=$(readlink -f "${BASH_SOURCE[0]:-$0}")
+FICTION_PATH="${FICTION_PATH//fiction.so.sh}"
+bashx_path="$FICTION_PATH/modules/bashx"
 default_index="index.shx"
 FICTION_META=""
 workerargs=""
 core=""
+_green="$(tput setaf 2)"
+_red="$(tput setaf 1)"
+_white="$(tput setaf 255)"
+_bold="$(tput bold)"
+_nc="$(tput sgr 0)"
+FICTION_VERSION="v1.0.0-prerelease"
 encode_routes="false"
-  if [[ -z "$serverTmpDir" ]]; then 
-    ! pidof fiction >/dev/null && [ -d "$FICTION_PATH/.fiction" ] && rm -rf $FICTION_PATH/.fiction/* 2>1 >/dev/null
-    serverTmpDir="$FICTION_PATH/.fiction/tmp_$(openssl rand -hex 16)"
-    mkdir -p "$serverTmpDir"
-    #echo $?
-    if [[ $? > 0 ]]; then
-      serverTmpDir="/tmp/.fiction/tmp_$(openssl rand -hex 16)"
-      mkdir -p "$serverTmpDir"
-    fi
-  fi
+
 # Helper functions
 function @cache() {
   [ -z "$(declare -F "$1")" ] && return
@@ -53,13 +48,26 @@ function @cache() {
 }
 
 function @prerender {
-  [ -z "$(declare -F "$1")" ] && return
+  declare -F "$1" >/dev/null && return
  # @cache "$1" # just in case
   local PRERENDER_DATA="$1(){ echo \"$(eval "$1" | sed 's+"+\\"+g')\"; }"
   eval "$PRERENDER_DATA"
-  if [ -n "$(declare -F "\\$1")" ]; then
+  if declare -F "$1" >/dev/null; then
     PRERENDER_DATA="\\$1(){ echo \"$(eval "\\$1" | sed -e 's+"+\\"+g')\"; }"
     eval "$PRERENDER_DATA"
+  fi
+}
+
+function mktmpDir() {
+  if [[ -z "$serverTmpDir" ]]; then 
+    ! pidof fiction >/dev/null && [ -d "$FICTION_PATH/.fiction" ] && rm -rf $FICTION_PATH/.fiction/* 2>1 >/dev/null
+    serverTmpDir="$FICTION_PATH/.fiction/tmp_$(openssl rand -hex 16)"
+    mkdir -p "$serverTmpDir"
+    #echo $?
+    if [[ $? > 0 ]]; then
+      serverTmpDir="/tmp/.fiction/tmp_$(openssl rand -hex 16)"
+      mkdir -p "$serverTmpDir"
+    fi
   fi
 }
 
@@ -75,6 +83,11 @@ function addMeta() {
 function setHeader() {
   [[ -z "$1" || -z "$2" ]]
   HTTP_RESPONSE_HEADERS["$1"]="$2"
+}
+
+function error() {
+  [[ ${#FUNCNAME[@]} > 1 ]] && echo -n "(${FUNCNAME[1]}) "
+  echo "${_red}Error:${_nc} ${@}" >&2
 }
 
 function addServerAction() {
@@ -457,27 +470,19 @@ rename_fn() {
 function FictionServePath() {
   # FictionServePath <from> <to:fn> <as> <type?>
   [[ -z "$1" || -z "$2" ]] && return 1
+  mktmpDir
   local type="${4:-static}"
   if [[ "$FICTION_BUILD" ]]; then 
     [[ "$3" == text/html ]] || return
-  else 
-    echo "Added ${type} route: from '$1' to '$2' ${3:+as '$3'}"
   fi
+
   case "$type" in 
         api | cgi)
-            #route="$(sha256sum <<< "$1")" 
+          [[ $type == cgi ]] && [ ! -x "$2" ] && error "$2 is not an executable. Check if the file exists and has executable permission" && return 1
             funcname="$2";
-            #route="${route::-3}"
             route="$1"
         ;;
-        static)
-            #route="$(sha256sum <<< "$1")";
-            funcname="$(uuidgen)";
-            declare -F "$2" > /dev/null && rename_fn "$2" "$funcname" || eval "$funcname() { ${2%;}; }";
-            #route="${route::-3}"
-            route="$1"
-        ;;
-        dynamic | dynamic-api)
+        static | dynamic | dynamic-api)
             route="$1";
             funcname="$(uuidgen)";
             declare -F "$2" > /dev/null && rename_fn "$2" "$funcname" || eval "$funcname() { ${2%;}; }"
@@ -494,6 +499,7 @@ function FictionServePath() {
     __e "$ou" "$serverTmpDir/.routes"
     unset ou route funcname
   fi
+  echo "[${_white}+${_nc}] Added ${type} route: from ${_bold}'$1'${_nc} to ${_bold}'$2'${_nc} ${3:+as '$3'}"
 }
 
 show_404() {
@@ -528,11 +534,10 @@ function FictionRequestHandler() {
         local route func route1 func1 m=false ou;
         #route1=$(echo "$REQUEST_PATH" | sha256sum);
         routes=$(__d "$serverTmpDir/.routes");
-        ou=$(echo "$routes" | grep "${route1}");
+        ou=$(echo "$routes" | grep "$REQUEST_PATH");
         ou2=$(echo "$routes" | grep "dynamic");
-        if [[ -n "$ou" ]]; then
+        if [[ "$ou" ]]; then
             read type filetype route func <<< "$ou";
-            [[ "${route1::-3}" == "$route" ]] || show_404;
             read func funcargs <<< "$func";
             FICTION_ROUTE="$REQUEST_PATH";
             if [[ $type == cgi ]]; then
@@ -653,7 +658,7 @@ function parseAndPrint() {
   
   buildResponse
   unset POST GET
-  "${verbose:=false}" && echo "[$(date)] $HTTP_VERSION $REQUEST_METHOD $REQUEST_PATH $status $(($(date +%s%3N)-time1))ms" >&2
+  "${verbose:=false}" && echo "[$(date)] $REQUEST_METHOD $REQUEST_PATH $status $(($(date +%s%3N)-time1))ms" >&2
   unset HTTP_VERSION REQUEST_METHOD REQUEST_PATH status
 }
 function FictionServeDir() { 
@@ -662,7 +667,7 @@ function FictionServeDir() {
     [[ "${download:-true}" == true ]] && local type=application/x-octet-stream;
     if [[ -n "$ROUTE_APPEND" ]] && [[ "${ROUTE_APPEND: -1}" == "/" ]]; then
         ROUTE_APPEND="${ROUTE_APPEND:0:0-1}";
-    fi;
+    fi
     if [ -d "$1" ]; then
         [[ "${4:-true}" == true ]] && FictionServePath "${ROUTE_APPEND}" "tree -H '$ROUTE_APPEND' -L 1 '$1'" "text/html";
         test -e "$1/"* > /dev/null 2>&1 && for item in ${1}/*;
@@ -678,7 +683,7 @@ function FictionServeDir() {
             fi;
         done;
     else
-        echo "Error: $FUNCNAME $@: $1 is not a directory" 1>&2;
+        error "$1 is not a directory"
         return 1;
     fi
 }
@@ -698,11 +703,11 @@ FictionServeFile ()
         ROUTEPATH="${1}";
         if [ "${ROUTEPATH::1}" == "." ]; then
             ROUTEPATH="${ROUTEPATH:1}";
-        fi;
+        fi
         if [[ "${ROUTEPATH::1}" != '/' ]]; then
             ROUTEPATH="/${ROUTEPATH}";
-        fi;
-    fi;
+        fi
+    fi
     FictionServePath "${ROUTEPATH}" "${ROUTEFN}" "${3:-$(file --mime-type -b "${1}")}"
 }
 
@@ -715,8 +720,8 @@ function FictionHttpServer () {
     else
         if [[ "$origaddress" =~ "http://" ]]; then
             origaddress="${origaddress//http:\/\//}";
-        fi;
-    fi;
+        fi
+    fi
     IFS=':' read -r address port <<< "$origaddress";
     [ -z "$port" ] && { 
         "${HTTPS:=false}" && port=443 || port=80
@@ -735,37 +740,36 @@ function FictionHttpServer () {
                 ;;
                 ssl_cert)
                     [ -f "$value" ] && SSL_CERT="$value" || { 
-                        echo "ssl_cert: $value: no such file" 1>&2 && return 1
+                        error "ssl_cert: $value: no such file" && return 1
                     }
                 ;;
                 ssl_key)
                     [ -f "$value" ] && SSL_KEY="$value" || { 
-                        echo "ssl_key: $value: no such file" 1>&2 && return 1
+                        error "ssl_key: $value: no such file" && return 1
                     }
                 ;;
                 core)
                     core="$value"
                 ;;
                 *)
-                    echo "Illegal option: $key" 1>&2;
+                    error "Illegal option: $key" 1>&2;
                     return 1
                 ;;
             esac
         done
     fi
+    echo -e "\nStarting Fiction (${_green}$FICTION_VERSION${_nc})"
+    mktmpDir
     case "$core" in 
         bash)
             if "${HTTPS:=false}"; then
                 echo "HTTPS is not supported in bash mode" 1>&2;
                 exit 1;
             else
-                [ ! -f "$FICTION_PATH/accept" ] && echo "\`accept\` is not found in $FICTION_PATH" 1>&2 && return 1;
-                enable -f "$FICTION_PATH/accept" accept;
-                set -x;
-                cat /proc/$$/cmdline;
-                echo -n fiction > /proc/self/cmdline;
-                set +x;
-                [[ "$port" = 80 ]] && echo -e "\nServing your webserver at http://$address (single connection mode)" || echo -e "\nServing your webserver at http://$address:$port (single connection mode)";
+                [ ! -f "$FICTION_PATH/accept" ] && error "\`accept\` is not found in $FICTION_PATH" && return 1;
+                enable -f "$FICTION_PATH/modules/accept" accept;
+                [[ "$port" = 80 ]] && echo -e "\nServer address: http://$address (single connection mode)" || echo -e "\nServer address: http://$address:$port (single connection mode)";
+                #echo "$(tput setaf 3)Warning:${_nc} In current mode the server manages only one connection at the time"
                 while true; do
                     accept -b "$BIND_ADDRESS" -r REMOTE_ADDR "${HTTP_PORT}";
                     if [[ $? = 0 && -n "$ACCEPT_FD" ]]; then
@@ -780,7 +784,7 @@ function FictionHttpServer () {
         nc | netcat | ncat | socat)
             echo "FICTION_PATH='$FICTION_PATH'" >> "$serverTmpDir/worker.sh";
             declare | \
-            grep -vE '(SSH_|^PWD|^OLDPWD|^TERM|^HOME|^USER|^PATH|BASH_VERSINFO|^BASHOPTS|^EUID|^PPID|^SHELLOPTS|^UID)' >>"$serverTmpDir/worker.sh"
+            grep -vE '(SSH_|^PWD|^OLDPWD|^TERM|^HOME|^USER|^PATH|^BASH_*|^BASHOPTS|^EUID|^PPID|^SHELLOPTS|^UID)' >>"$serverTmpDir/worker.sh"
             chmod +x "$serverTmpDir/worker.sh";
             cat >> "$serverTmpDir/job.sh" <<EOF
 #!/bin/bash
@@ -799,9 +803,10 @@ EOF
 
             chmod +x "$serverTmpDir/job.sh";
             trap clean EXIT;
-            echo -ne "\nServing your webserver at ";
-            case "$core" in 
+            echo -n "Server address: ";
+            case "${core:-socat}" in 
                 socat)
+                    which socat >/dev/null || { error "cannot find socat binary" && return 1; }
                     if "${HTTPS:=false}"; then
                         [[ "$port" = 443 ]] && echo -n "https://$address" || echo -n "https://$address:$port";
                         echo " (forking mode)";
@@ -813,6 +818,7 @@ EOF
                     fi
                 ;;
                 ncat)
+                    which ncat >/dev/null || { error "cannot find ncat binary" && return 1; }
                     if "${HTTPS:=false}"; then
                         [[ "$port" = 443 ]] && echo -n "https://$address" || echo -n "https://$address:$port";
                         echo " (forking mode)";
@@ -824,9 +830,9 @@ EOF
                     fi
                 ;;
                 nc | netcat)
+                    which nc >/dev/null || { error "cannot find netcat binary" && return 1; }
                     if "${HTTPS:=false}"; then
-                        echo "HTTPS is not supported in legacy netcat mode" 1>&2;
-                        exit 1;
+                        error "HTTPS is not supported in legacy netcat mode" 1>&2
                     else
                         [[ "$port" = 80 ]] && echo -n "http://$address" || echo -n "http://$address:$port";
                         echo " (forking mode)";
@@ -834,13 +840,14 @@ EOF
                         while true; do
                             exec -a "fiction" $nc_path -vklp "$HTTP_PORT" -e "$serverTmpDir/job.sh";
                             echo $?;
-                        done;
+                        done
                     fi
                 ;;
             esac
         ;;
     esac
 }
+
 
 if ! (return 0 2>/dev/null); then
   case "$1" in 
@@ -850,11 +857,12 @@ if ! (return 0 2>/dev/null); then
           BASHX_NESTED=true
           source "$bashx_path"
         else 
-          echo "(fiction) Error: cannot load bashx ($bashx_path)" >&2
+          error "cannot load bashx ($bashx_path)" >&2
           exit 1
         fi
       fi
       [[ "$2" ]] && default_index="$2"
+      BASHX_VERBOSE=true
       bashx "$default_index"
     ;;
     build)
@@ -865,33 +873,41 @@ if ! (return 0 2>/dev/null); then
           BASHX_NESTED=true
           source "$bashx_path"
         else 
-          echo "(fiction) Error: cannot load bashx ($bashx_path)" >&2
+          error "cannot load bashx ($bashx_path)"
           exit 1
         fi
       fi
       FICTION_BUILD=true
       [[ "$2" ]] && default_index="$2"
+      [[ "$3" ]] && target_dir="$3"
       BASHX_VERBOSE=true
       bashx "$default_index"
       [[ $? > 0 ]] && exit 
       while read route; do
         read type filetype route func <<< "$route";
         echo -ne "(-) $route...\r"
-        path="fiction_compiled$route"
-        [[ "$route" ]] && mkdir -p "fiction_compiled$route"
+        path="${default_dir:=fiction_compiled}$route"
+        [[ "$route" ]] && mkdir -p "$path"
         read func funcargs <<< "$func";
         ${func} ${funcargs//\"/\\\"} >"$path/$type.html" &
         pid=$!
         s='-\|/'; i=0; while kill -0 $pid 2>/dev/null; do i=$(((i+1)%4)); printf "\r[${s:$i:1}] $route\r"; sleep .1; done
         wait $pid
         exit=$?
-        [[ $exit == 0 ]] && [ -f "$path/$type.html" ] && echo "[✓] $route (${path%%\/}/${type}.html)" ||  echo "[x] $route ($exit)"
+        [[ $exit == 0 ]] && [ -f "$path/$type.html" ] && echo "[$_green✓$_nc] $route (${path%%\/}/${type}.html)" ||  echo "[${_red}x${_nc}] $route ($exit)"
       done < <(__d "$serverTmpDir/.routes")
       rm -rf "$serverTmpDir"
-      echo "Done ($(($(date +%s%3N)-time))ms)"
+      echo "Build completed. ($(($(date +%s%3N)-time))ms)"
     ;; 
     *)
-      echo "Invalid action: $1" >&2
+      error "Invalid action: $1"
+      cat << EOF
+Usage: $0 [action] [arguments]
+
+Available actions:
+  run   [file?]            Start the server using <file> with preloaded Fiction (index.shx default)
+  build [file?] [target?]  Build the routes defined into <file> into <target> directory (fiction_compiled default)
+EOF
       exit 1
     ;;
   esac
