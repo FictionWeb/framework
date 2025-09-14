@@ -103,7 +103,7 @@ function addServerAction() {
   local path="/__server-action_$(echo "$1" | sha256sum)"
   local path2="$(sha256sum <<< "${path::-3}")"
   [[ ! "$(__d "$serverTmpDir/.routes")" =~ ${path2::-3} ]] && FictionServePath "${path::-3}" "$1" "" api >&2
-  [[ $? == 0 ]] && printf "%s" "$path" || return 
+  [[ $? == 0 ]] && printf "%s" "serverAction('${path::-3}')" || return 
   unset path json
 }
 
@@ -268,7 +268,7 @@ buildResponse() {
       "${INCLUDE_TAILWINDCSS:-true}" && echo '<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>';
       "${INCLUDE_LUCIDE:-true}" && echo '<script src="https://unpkg.com/lucide@latest"></script>';
       echo '</head>';
-      [[ "${output::6}" == \<body\> ]] && echo "$output" || echo "<body>$output</body>";
+      [[ "${output::5}" == \<body ]] && echo "$output" || echo "<body>$output</body>";
       "${INCLUDE_LUCIDE:=true}" && echo '<script>lucide.createIcons();</script>'
      )
 </html>
@@ -694,6 +694,7 @@ FictionServeDynamicPath ()
 }
 FictionServeFile () 
 { 
+    [ ! -f "$1" ] && error "$1 is not a file" && return 1
     local ROUTEFN="FR$(uuidgen)";
     eval "${ROUTEFN}(){ cat \"$1\"; }";
     local ROUTEPATH;
@@ -911,4 +912,17 @@ EOF
       exit 1
     ;;
   esac
+else 
+  if [[ "${BASH_SOURCE[-1]}" =~ .shx|.bashx ]]; then
+    if ! declare -F bashx >/dev/null 2>&1; then
+        if [ -f "$bashx_path" ]; then 
+          BASHX_NESTED=true
+          bash "$bashx_path" "${BASH_SOURCE[-1]}"
+          exit
+        else 
+          error "cannot load bashx ($bashx_path)"
+          exit 1
+        fi
+    fi 
+  fi
 fi
