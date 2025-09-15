@@ -10,3 +10,4 @@ First ever bash web framework. Is it stupid? Yes. Is it unneccessary? Indeed. Is
 - Dynamic routes with slug capture
 - Support for different core options (nc,ncat,socat,accept)
 - Automatic form data/JSON POST data parsing 
+- Static pages into native HTML compiler
