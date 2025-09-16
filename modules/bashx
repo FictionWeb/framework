@@ -7,6 +7,10 @@ _nc="$(tput sgr 0)"
 function _render() {
 local level=0 flevel=0 inscript=false output='' i=0 tag=''
 local -a parent=() extra=()
+function @error() {
+  [[ ${#FUNCNAME[@]} > 1 ]] && echo -n "(${FUNCNAME[1]}) " >&2
+  echo "${_red}Error:${_nc} ${@}" >&2
+}
 while read -r line; do 
  # echo "line: $line" >&2
   [[ "$nextline" ]] && local buf="$line" && line="$nextline" && nextline="$buf"
@@ -20,26 +24,51 @@ while read -r line; do
       [[ "$line" =~ /\>.* ]] && nextline=$(sed 's|^.*/>\(.*\)|\1|' <<< "$line") && line="${line//$nextline}" 
       line="${line%%\/\>}"
       line="${line%%\>}"
-      output+="${line##\<}"$'\n' # only keep the function and it's arguments
+      line="${line##\<}"
+      output+="$line"$'\n' # only keep the function and it's arguments
     else
-      #echo "$line" >&2
       read tag _ <<< "$line"
       if [[ "$tag" == '<script' ]]; then 
         if [[ "$line" =~ 'bash' ]]; then # if lang="bash", the code will be directly executed
           inscript=true
         elif [[ "$line" =~ 'dom' ]]; then # if lang="dom", the code will be executed but added as js code
           local dom=true;
-          output+="echo '<script>'"$'\n';
+          output+=$'printf "%s" "<script>"\n';
         fi
       elif [[ "$tag" =~ '</script' ]]; then 
         if [[ "$inscript" == true ]]; then 
           inscript=false
         else
-          output+="echo '</script>'"$'\n';
+          output+=$'printf "%s" "</script>"\n';
           [[ "$dom" ]] && unset dom
         fi
-      else  
-          output+="echo \"${line//\"/\\\"}\""$'\n'
+      else
+          if [[ "$line" =~ on: ]]; then
+            line="${line%%\>}";
+            line="${line##\<}";
+            local arg attr key events;
+            read el args <<< "$line";
+            #set -- $args
+            while read arg; do 
+              IFS='=' read key value <<< "${arg}"; 
+              @unquote value
+              if [[ -z "$key" ]]; then 
+                continue
+              fi 
+              case "$key" in
+                js-on:*) key="${key//js-on:}"; events+="on${key,,}=\"$($value)\" " ;;
+                on:*) key="${key//on:}"; _events+="on${key,,}=\"\$(addServerAction "$value")\" " ;;
+                on*)  events+="${key,,}=\"$value\" " ;;
+                *)  attr+="$key=\"$value\" "
+              esac
+            done <<< "$args"
+            output+="printf '%s' \"<$el $attr $events>'\""$'\n'
+            unset el args key events arg
+          elif [[ "$line" =~ '</'|'<body'|'<main'|'<div' ]]; then
+            output+="printf '%s\n' '${line}'"$'\n'
+          else
+          output+="printf '%s' \"${line//\"/\\\"}\""$'\n'
+          fi
       fi
       unset tag _
     fi 
@@ -49,14 +78,14 @@ while read -r line; do
       output+="$line"$'\n'
     else 
       [[ "$line" =~ '{' && "$line" =~ '}' ]] && line=$(echo "$line" | sed 's|{\([^[:space:]]\+\)}|<a data-bind="\1"></a>|g')
-      output+="echo \"${line//\"/\\\"}\""$'\n'
+      output+="printf '%s' \"${line//\"/\\\"}\""$'\n'
     fi 
   fi
 done
 #output="$(echo "$output" | sed 's|\(.*\)}|\1|')"
 # <<< "${input}"
 
-echo "$output"
+render_output="$output"
 unset input output level flevel i inscript parent line nextline
 } 
 
@@ -75,25 +104,26 @@ local out2=$(echo "$input" | awk 'function count(s, c) { n=0; for (i=1; i<=lengt
 #return
 while read -d $'\r' block; do
   #echo "${block}"
-  block1=$(echo "${block//$'\n'}" | sed 's|\([a-zA-Z|"|\@|\/]\)>|\1>\n|g; s|\(</[^>]*>\)|\n\1|g') 
+  block1=$(echo "${block//$'\n'}" | sed 's|\([a-zA-Z0-9|"|\@|\/]\)>|\1>\n|g; s|\(</[^>]*>\)|\n\1|g') 
   if [[ "${block//$'\n'}" =~ 'html' ]]; then
     block1="${block1%%\}}"
-    local newblock="{"$'\n'"$(_render "" <<< "${block1/@return html \{}")"$'\n'"}"
+    _render "" <<< "${block1/@return html \{}"
+    local newblock="{"$'\n'"${render_output}"$'\n'"}"
   elif [[ "${block//$'\n'}" =~ "json" ]]; then 
     local newblock="${block/@return json}"
     newblock="${newblock//\};/\}}"
-    newblock="${newblock//$'\n'}"
+    newblock="${newblock//$'\n'/ }"
     newblock=$(cat <<-eof
 echo "${newblock//\"/\\\"}"
 eof
 )
     newblock="${newblock//  }"
   fi
-  #  echo "$newblock"
+  newblock="${newblock##$'\n'}"
   block="${block//$'\n'/#NEWLIN#}"
   block="${block//\[/\\\[}"
   block="${block//\]/\\\]}"
-  out1="${out1//$block/$newblock}"
+  out1="${out1//$block/${newblock% }}"
 done <<< "$out2"
 [[ "$BASHX_VERBOSE" ]] && { 
   printf "%s\n" "[$_green✓$_nc] Compiled $1 ($(($(date +%s%3N)-time))ms)" 
@@ -128,7 +158,7 @@ function @parse {
         key="${key//on:}"
         value="${value##\'}"
         value="${value//\'}"
-        _events+="on${key,,}=\"$(addServerAction "$value")\" "
+        _events+="on${key,,}=\"\$(addServerAction "$value")\" "
         ;;
       on*)
         _events+="${key,,}=\"$value\" "
@@ -190,15 +220,16 @@ function import() {
     else
       fn_name="$1"
     fi
-    eval "${fn_name}() { source \"$name\"; }"
+    eval "${fn_name}() { $(cat "$name") }"
   elif [[ "$1" == "from" ]]; then
     shift
     filename="$1"
     if [ ! -f "$filename" ]; then
-      echo "$name not found to import."
+      error "$name not found to import."
       exit 1
     fi
-    local funcout="$(sed -n '/'"$name"'.*\(\)/,/^}/p' "$filename")"
+    [[ "$filename" =~ .shx|.bashx ]] && local funcout="$(bashx "$filename" && declare -f "$name" && declare -f "/$name")" || local funcout="$(. "$filename" && declare -f "$name")"
+    [ -z "$funcout" ] && error "$name is not found in $filename" && return 1
     shift
     if [[ "$1" == "as" ]]; then
       shift
@@ -209,9 +240,7 @@ function import() {
       fi
       eval "${funcout/$name/$fn_name}"
     else
-      if [[ -n "$funcout" ]]; then 
-        echo "$funcout" | bashx 
-      fi
+      [[ "$funcout" ]] && eval "$funcout"
     fi
   else 
     [[ -n "$name" ]] && { [[ "$name" =~ .shx|.bashx ]] && bashx "$name" || source "$name"; }
@@ -223,11 +252,16 @@ if (return 0 2>/dev/null); then
   return
 elif [[ -z $BASHX_NESTED ]]; then
   BASHX_NESTED=true 
-  if [ -f "$1" ]; then 
-    bashx "$1"
+  if [ -z "$1" ]; then
+    @error "Invalid usage: Use $0 [filename]"
+    exit 1
+  elif [ -f "$1" ]; then
+    filename="$1" 
+    [[ "$filename" != "${filename##*/}" ]] && cd "${filename%/*}" && filename="${filename##*/}"
+    bashx "$filename"
     exit
   else
-    error "$1 is not found"
+    @error "$1 is not found"
     exit 1
   fi
 fi
