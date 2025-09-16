@@ -905,6 +905,7 @@ if ! (return 0 2>/dev/null); then
 Fiction $FICTION_VERSION
 Copyright (C) Tirito6626, notnulldaemon 2025
 EOF
+    ;;
     *)
       error "Invalid action: $1"
       cat << EOF
