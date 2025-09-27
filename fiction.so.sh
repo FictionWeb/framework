@@ -466,61 +466,6 @@ rename_fn() {
   unset -f "$1";
 }
 
-# HelperFns
-function FictionServePath() {
-  # FictionServePath <from> <to:fn> <as> <type?>
-  [[ -z "$1" || -z "$2" ]] && return 1
-  mktmpDir
-  local type="${4:-static}"
-  if [[ "$FICTION_BUILD" ]]; then 
-    [[ "$3" == text/html ]] || return
-  fi
-
-  case "$type" in 
-        api | cgi)
-          [[ $type == cgi ]] && [ ! -x "$2" ] && error "$2 is not an executable. Check if the file exists and has executable permission" && return 1
-            funcname="$2";
-            route="$1"
-        ;;
-        static | dynamic | dynamic-api)
-            route="$1";
-            funcname="$(uuidgen)";
-            declare -F "$2" > /dev/null && rename_fn "$2" "$funcname" || eval "$funcname() { ${2%;}; }"
-        ;;
-    esac
-  if [ ! -f "$serverTmpDir/.routes" ]; then
-    : >"$serverTmpDir/.routes"
-    __e "$type ${3:-auto} $route $funcname" "$serverTmpDir/.routes"
-    unset ou route funcname
-  else 
-    local ou="$(__d "$serverTmpDir/.routes")"
-    rename_fn "$2" "$funcname"
-    ou+=$'\n'"$type ${3:-auto} $route $funcname" 
-    __e "$ou" "$serverTmpDir/.routes"
-    unset ou route funcname
-  fi
-  echo "[${_white}+${_nc}] Added ${type} route: from ${_bold}'$1'${_nc} to ${_bold}'$2'${_nc} ${3:+as '$3'}"
-}
-
-show_404() {
-  INCLUDE_DOM=false
-  INCLUDE_LUCIDE=false
-  httpSendStatus 404
-  sendError "404 Page Not Found"
-  return
-}
-
-
-function FictionServeDynamicPath() {
-  # FictionServeDynamicPath <from> <to:fn> <as>
-  [[ -z "$1" || -z "$2" ]] && return 1
-  FictionServePath "$1" "$2" "$3" dynamic
-}
-
-function FictionServeCGI() {
-  FictionServePath "${2:-/${1//.\/}}" "$1" "$3" cgi
-}
-
 function FictionRequestHandler() { 
     case "$REQUEST_PATH" in 
         *".."* | *"~"*)
@@ -542,7 +487,7 @@ function FictionRequestHandler() {
             FICTION_ROUTE="$REQUEST_PATH";
             if [[ $type == cgi ]]; then
                 local headers=;
-                REQUEST_METHOD="$REQUEST_METHOD" HTTP_X_REAL_IP="$REMOTE_ADDR" FICTION_ROUTE="$REQUEST_PATH" SCRIPT_FILENAME="$func" HTTP_USER_AGENT="${HTTP_HEADERS['user-agent']}" $func;
+                SERVER_SOFTWARE="Fiction $FICTION_VERSION" REQUEST_METHOD="$REQUEST_METHOD" REMOTE_ADDR="$REMOTE_ADDR" FICTION_ROUTE="$REQUEST_PATH" REQUEST_PATH="$REQUEST_PATH" SCRIPT_FILENAME="$func" HTTP_USER_AGENT="${HTTP_HEADERS['user-agent']}" $func;
             else
                 [[ "$func" == 'echo' ]] && $func ${funcargs//\"/\\\"} || $func "${funcargs//\"/\\\"}";
             fi
@@ -661,6 +606,81 @@ function parseAndPrint() {
   "${verbose:=false}" && echo "[$(date)] $REQUEST_METHOD $REQUEST_PATH $status $(($(date +%s%3N)-time1))ms" >&2
   unset HTTP_VERSION REQUEST_METHOD REQUEST_PATH status
 }
+
+# HelperFns
+function FictionServePath() {
+  # FictionServePath <from> <to:fn> <as> <type?>
+  [[ -z "$1" || -z "$2" ]] && return 1
+  mktmpDir
+  local type="${4:-static}"
+  if [[ "$FICTION_BUILD" ]]; then 
+    [[ "$3" == text/html ]] || return
+  fi
+
+  case "$type" in 
+        api | cgi)
+          [[ $type == cgi ]] && [ ! -x "$2" ] && error "$2 is not an executable. Check if the file exists and has executable permission" && return 1
+            funcname="$2";
+            route="$1"
+        ;;
+        static | dynamic | dynamic-api)
+            route="$1";
+            funcname="$(uuidgen)";
+            declare -F "$2" > /dev/null && rename_fn "$2" "$funcname" || eval "$funcname() { ${2%;}; }"
+        ;;
+    esac
+  if [ ! -f "$serverTmpDir/.routes" ]; then
+    : >"$serverTmpDir/.routes"
+    __e "$type ${3:-auto} $route $funcname" "$serverTmpDir/.routes"
+    unset ou route funcname
+  else 
+    local ou="$(__d "$serverTmpDir/.routes")"
+    rename_fn "$2" "$funcname"
+    ou+=$'\n'"$type ${3:-auto} $route $funcname" 
+    __e "$ou" "$serverTmpDir/.routes"
+    unset ou route funcname
+  fi
+  echo "[${_white}+${_nc}] Added ${type} route: from ${_bold}'$1'${_nc} to ${_bold}'$2'${_nc} ${3:+as '$3'}"
+}
+
+show_404() {
+  INCLUDE_DOM=false
+  INCLUDE_LUCIDE=false
+  httpSendStatus 404
+  sendError "404 Page Not Found"
+  return
+}
+
+
+function FictionServeDynamicPath() {
+  # FictionServeDynamicPath <from> <to:fn> <as>
+  [[ -z "$1" || -z "$2" ]] && return 1
+  FictionServePath "$1" "$2" "$3" dynamic
+}
+
+function FictionServeCGI() {
+  FictionServePath "${2:-/${1//.\/}}" "$1" "$3" cgi
+}
+
+function FictionServeFile() { 
+    [ ! -f "$1" ] && error "$1 is not a file" && return 1
+    local ROUTEFN="FR$(uuidgen)";
+    eval "${ROUTEFN}(){ cat \"$1\"; }";
+    local ROUTEPATH;
+    if [[ -n "$2" ]]; then
+        ROUTEPATH="$2";
+    else
+        ROUTEPATH="${1}";
+        if [ "${ROUTEPATH::1}" == "." ]; then
+            ROUTEPATH="${ROUTEPATH:1}";
+        fi
+        if [[ "${ROUTEPATH::1}" != '/' ]]; then
+            ROUTEPATH="/${ROUTEPATH}";
+        fi
+    fi
+    FictionServePath "${ROUTEPATH}" "${ROUTEFN}" "${3:-$(file --mime-type -b "${1}")}"
+}
+
 function FictionServeDir() { 
     local ROUTE_APPEND="$2";
     local download="$3";
@@ -687,30 +707,8 @@ function FictionServeDir() {
         return 1;
     fi
 }
-FictionServeDynamicPath () 
-{ 
-    [[ -z "$1" || -z "$2" ]] && return 1;
-    FictionServePath "$1" "$2" "$3" dynamic
-}
-FictionServeFile () 
-{ 
-    [ ! -f "$1" ] && error "$1 is not a file" && return 1
-    local ROUTEFN="FR$(uuidgen)";
-    eval "${ROUTEFN}(){ cat \"$1\"; }";
-    local ROUTEPATH;
-    if [[ -n "$2" ]]; then
-        ROUTEPATH="$2";
-    else
-        ROUTEPATH="${1}";
-        if [ "${ROUTEPATH::1}" == "." ]; then
-            ROUTEPATH="${ROUTEPATH:1}";
-        fi
-        if [[ "${ROUTEPATH::1}" != '/' ]]; then
-            ROUTEPATH="/${ROUTEPATH}";
-        fi
-    fi
-    FictionServePath "${ROUTEPATH}" "${ROUTEFN}" "${3:-$(file --mime-type -b "${1}")}"
-}
+
+
 
 function FictionHttpServer () { 
     [[ "$FICTION_BUILD" ]] && return
