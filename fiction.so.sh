@@ -60,7 +60,7 @@ function @prerender {
 
 function mktmpDir() {
   if [[ -z "$serverTmpDir" ]]; then 
-    ! pidof fiction >/dev/null && [ -d "$FICTION_PATH/.fiction" ] && rm -rf $FICTION_PATH/.fiction/* 2>1 >/dev/null
+    ! pidof fiction >/dev/null && [ -d "$FICTION_PATH/.fiction" ] && rm -rf $FICTION_PATH/.fiction/* 2>&1 >/dev/null
     serverTmpDir="$FICTION_PATH/.fiction/tmp_$(openssl rand -hex 16)"
     mkdir -p "$serverTmpDir"
     #echo $?
@@ -81,7 +81,7 @@ function addMeta() {
 }
 
 function setHeader() {
-  [[ -z "$1" || -z "$2" ]]
+  [[ -z "$1" || -z "$2" ]] && return
   HTTP_RESPONSE_HEADERS["$1"]="$2"
 }
 
@@ -231,147 +231,7 @@ httpSendStatus() {
   HTTP_RESPONSE_HEADERS["status"]="${status_code[${1:-200}]}"
 }
 
-buildResponse() {
-  filename="$serverTmpDir/output_$RANDOM"
-  [ -f "$filename" ] && rm "$filename"
-  FictionRequestHandler >"$filename"
-  [ -z "${HTTP_RESPONSE_HEADERS["status"]}" ] && httpSendStatus "${statuscode:=200}"
-  printf '%s %s\n' "HTTP/1.1" "${HTTP_RESPONSE_HEADERS["status"]}"
-  status="${HTTP_RESPONSE_HEADERS["status"]}"
-  routetype="$type"
-  unset 'HTTP_RESPONSE_HEADERS["status"]'
-
-  # printf '%s\n' "$(<"$filename")"
-     # cat "$filename" >&2 
-  if [[ -z "$filetype" || "$filetype" == "auto" ]]; then
-    local _ char type="$(file --mime "$filename")"
-    IFS=' ' read _ type char <<<"$type"
-    which file 2>&1 >/dev/null && HTTP_RESPONSE_HEADERS["content-type"]="${type//;/}"
-    unset _ type char
-  else
-    HTTP_RESPONSE_HEADERS["content-type"]="${filetype}"
-  fi
-  if [[ "${HTTP_RESPONSE_HEADERS["content-type"]}" =~ html && "$routetype" != cgi ]]; then 
-    local isdoctype=false ishtml=false isbody=false iscbody=false ishead=false ischtml=false ischead=false
-    local output=$(cat "$filename")
-    if [[ "${output::6}" != '<html>' && "${output::15}" != '<!DOCTYPE html>' ]]; then
-    #local csrf=$(sessionGet "$SESSION_ID")
-    #
-      cat << EOF > "$filename" 
-<!DOCTYPE html>
-<html> 
-  <head>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    $FICTION_HEAD
-    $(
-      "${INCLUDE_DOM:-true}" && echo "<script>$(cat "$FICTION_PATH/dom.js")</script>";
-      "${INCLUDE_TAILWINDCSS:-true}" && echo '<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>';
-      "${INCLUDE_LUCIDE:-true}" && echo '<script src="https://unpkg.com/lucide@latest"></script>';
-      echo '</head>';
-      [[ "${output::5}" == \<body ]] && echo "$output" || echo "<body>$output</body>";
-      "${INCLUDE_LUCIDE:=true}" && echo '<script>lucide.createIcons();</script>'
-     )
-</html>
-EOF
-    fi
-  fi
-
-  read size filename < <(wc -c "$filename")
-  HTTP_RESPONSE_HEADERS["content-length"]="${size:=0}"
-  if [[ "$routetype" != "cgi" ]]; then
-    for key in "${!HTTP_RESPONSE_HEADERS[@]}"; do
-      printf '%s: %s\n' "${key,,}" "${HTTP_RESPONSE_HEADERS[$key]}"
-    done
-    for value in "${cookie_to_send[@]}"; do
-      printf 'Set-Cookie: %s\n' "$value"
-    done
-    printf "\n"
-  fi 
-  cat "$filename"
-  printf "\n"
-  rm "$filename"
-  unset routetype
-}
 __x4gT9q6=( "$(openssl rand -hex 32)" "$(openssl rand -hex 16)" );
-
-respond() {
-  [[ -z "$1" || -z "$2" ]] && echo "$FUNCNAME: 2 arguments expected" >&2 && return 1
-  HTTP_RESPONSE_HEADERS["status"]="$1"
-  echo "$2"
-}
-parseAndPrint() {
-  time1=$(date +%s%3N)
-  verbose=true
-  local REQUEST_METHOD REQUEST_PATH HTTP_VERSION QUERY_STRING
-  local -A HTTP_HEADERS
-  declare -Ag POST 
-  declare -Ag GET
-  local -A HTTP_RESPONSE_HEADERS
-  local -A COOKIE
-  local -A SESSIONS
-  local -a cookie_to_send
-  
-  read -r REQUEST_METHOD REQUEST_PATH HTTP_VERSION
-  HTTP_VERSION="${HTTP_VERSION%%$'\r'}"
-  [[ "$HTTP_VERSION" =~ HTTP/[0-9]\.?[0-9]? ]] && HTTP_VERSION="${BASH_REMATCH[0]}"
-  [[ -z "$REQUEST_METHOD" || -z "$REQUEST_PATH" ]] && return
-
-  local line _h
-  while read -r line; do
-    line="${line%%$'\r'}"
-    [[ -z "$line" ]] && break
-    _h="${line%%:*}"
-    HTTP_HEADERS["${_h,,}"]="${line#*: }"
-  done
-  unset line _h
-
-  local entry
-  IFS='?' read -r REQUEST_PATH get <<<"$REQUEST_PATH"
-  get="$(urldecode "$get")"
-  IFS='#' read -r REQUEST_PATH _ <<<"$REQUEST_PATH"
-  QUERY_STRING="$get"
-  IFS='&' read -ra data <<<"$get"
-  for entry in "${data[@]}"; do
-    GET["${entry%%=*}"]="${entry#*=}"
-  done
-  REQUEST_PATH="$(dirname "$REQUEST_PATH")/$(basename "$REQUEST_PATH")"
-  REQUEST_PATH="${REQUEST_PATH#/}"
-
-  entry=''
-
-  local -a cookie
-  local key value
-  IFS=';' read -ra cookie <<<"${HTTP_HEADERS["cookie"]}"
-  [ -n "${HTTP_HEADERS["Cookie"]}" ] && ((${#cookie[@]} < 1 )) && cookie+=( ${HTTP_HEADERS["cookie"]//;} )
-  for entry in ${cookie[@]}; do
-    IFS='=' read -r key value <<<"$entry"
-    [[ "$key" ]] && COOKIE["$key"]="${value}"
-  done
-  unset entry cookie key value
-
-  if [[ "$REQUEST_METHOD" == "POST" ]] && ((${HTTP_HEADERS['content-length']:=0} > 0)); then
-    local entry
-    if [[ "${HTTP_HEADERS["content-type"]}" == "application/x-www-form-urlencoded" ]]; then
-      IFS='&' read -rN "${HTTP_HEADERS["Content-Length"]}" -a data
-      for entry in "${data[@]}"; do
-        entry="${entry%%$'\r'}"
-        POST["${entry%%=*}"]="${entry#*:}"
-      done
-    elif [[ "${HTTP_HEADERS["content-type"]}" == "application/json" ]]; then 
-      read -N "${HTTP_HEADERS["content-length"]}" data
-      eval $(json_to_arr "${data%%$'\r'}" POST) 
-    else
-      read -rN "${HTTP_HEADERS["content-length"]}" data
-      POST["raw"]="${data%%$'\r'}"
-    fi
-    unset entry
-  fi
-  
-  buildResponse
-  unset POST GET
-  "${verbose:=false}" && echo "[$(date)] $HTTP_VERSION $REQUEST_METHOD $REQUEST_PATH $status $(($(date +%s%3N)-time1))ms" >&2
-  unset HTTP_VERSION REQUEST_METHOD REQUEST_PATH status
-}
 
 
 __e() {
@@ -379,7 +239,7 @@ __e() {
 }
 
 __d() {
-  "$encode_routes" &&   openssl enc -d -aes-256-cbc -K "${__x4gT9q6[0]}" -iv "${__x4gT9q6[1]}" -in "$1" || cat "$1"
+  "$encode_routes" && openssl enc -d -aes-256-cbc -K "${__x4gT9q6[0]}" -iv "${__x4gT9q6[1]}" -in "$1" || cat "$1"
 }
 
 
@@ -466,12 +326,155 @@ rename_fn() {
   unset -f "$1";
 }
 
-function FictionRequestHandler() { 
-    case "$REQUEST_PATH" in 
-        *".."* | *"~"*)
-            show_404
-        ;;
-    esac;
+respond() {
+  [[ -z "$1" || -z "$2" ]] && echo "$FUNCNAME: 2 arguments expected" >&2 && return 1
+  HTTP_RESPONSE_HEADERS["status"]="$1"
+  echo "$2"
+}
+
+parsePost() {
+  if [[ "$REQUEST_METHOD" == "POST"|"PATCH"|"PUT" ]] && ((${HTTP_HEADERS['content-length']:=0} > 0)); then
+    local entry
+    if [[ "${HTTP_HEADERS["content-type"]}" == "application/x-www-form-urlencoded" ]]; then
+      IFS='&' read -rN "${HTTP_HEADERS["Content-Length"]}" -a data
+      for entry in "${data[@]}"; do
+        entry="${entry%%$'\r'}"
+        POST["${entry%%=*}"]="${entry#*:}"
+      done
+    elif [[ "${HTTP_HEADERS["content-type"]}" == "application/json" ]]; then 
+      read -N "${HTTP_HEADERS["content-length"]}" data
+      eval "$(json_to_arr "${data%%$'\r'}" POST)" 
+    else
+      read -rN "${HTTP_HEADERS["content-length"]}" data
+      POST["raw"]="${data%%$'\r'}"
+    fi
+    unset entry
+  fi
+}
+
+parseAndPrint() {
+  time1=$(date +%s%3N)
+  verbose=true
+  local REQUEST_METHOD REQUEST_PATH HTTP_VERSION QUERY_STRING
+  local -A HTTP_HEADERS
+  declare -Ag POST 
+  declare -Ag GET
+  local -A HTTP_RESPONSE_HEADERS
+  local -A COOKIE
+  local -A SESSIONS
+  local -a cookie_to_send
+  
+  read -r REQUEST_METHOD REQUEST_PATH HTTP_VERSION
+  HTTP_VERSION="${HTTP_VERSION%%$'\r'}"
+  [[ "$HTTP_VERSION" =~ HTTP/[0-9]\.?[0-9]? ]] && HTTP_VERSION="${BASH_REMATCH[0]}"
+  [[ -z "$REQUEST_METHOD" || -z "$REQUEST_PATH" ]] && return
+
+  local line _h
+  while read -r line; do
+    line="${line%%$'\r'}"
+    [[ -z "$line" ]] && break
+    _h="${line%%:*}"
+    HTTP_HEADERS["${_h,,}"]="${line#*: }"
+  done
+  unset line _h
+
+  local entry
+  IFS='?' read -r REQUEST_PATH get <<<"$REQUEST_PATH"
+  get="$(urldecode "$get")"
+  IFS='#' read -r REQUEST_PATH _ <<<"$REQUEST_PATH"
+  QUERY_STRING="$get"
+  IFS='&' read -ra data <<<"$get"
+  for entry in "${data[@]}"; do
+    GET["${entry%%=*}"]="${entry#*=}"
+  done
+  REQUEST_PATH="$(dirname "$REQUEST_PATH")/$(basename "$REQUEST_PATH")"
+  REQUEST_PATH="${REQUEST_PATH#/}"
+
+  entry=''
+
+  local -a cookie
+  local key value
+  IFS=';' read -ra cookie <<<"${HTTP_HEADERS["cookie"]}"
+  [ -n "${HTTP_HEADERS["Cookie"]}" ] && ((${#cookie[@]} < 1 )) && cookie+=( ${HTTP_HEADERS["cookie"]//;} )
+  for entry in ${cookie[@]}; do
+    IFS='=' read -r key value <<<"$entry"
+    [[ "$key" ]] && COOKIE["$key"]="${value}"
+  done
+  unset entry cookie key value
+
+  
+  buildResponse
+  unset POST GET
+  "${verbose:=false}" && echo "[$(date)] $HTTP_VERSION $REQUEST_METHOD $REQUEST_PATH $status $(($(date +%s%3N)-time1))ms" >&2
+  unset HTTP_VERSION REQUEST_METHOD REQUEST_PATH status
+}
+
+
+buildResponse() {
+  filename="$serverTmpDir/output_$RANDOM"
+  [ -f "$filename" ] && rm "$filename"
+  FictionRequestHandler >"$filename"
+  [ -z "${HTTP_RESPONSE_HEADERS["status"]}" ] && httpSendStatus "${statuscode:=200}"
+  printf '%s %s\n' "HTTP/1.1" "${HTTP_RESPONSE_HEADERS["status"]}"
+  status="${HTTP_RESPONSE_HEADERS["status"]}"
+  routetype="$type"
+  unset 'HTTP_RESPONSE_HEADERS["status"]'
+
+  # printf '%s\n' "$(<"$filename")"
+     # cat "$filename" >&2 
+  if [[ -z "$filetype" || "$filetype" == "auto" ]]; then
+    local _ char type="$(file --mime "$filename")"
+    IFS=' ' read _ type char <<<"$type"
+    which file 2>&1 >/dev/null && HTTP_RESPONSE_HEADERS["content-type"]="${type//;/}"
+    unset _ type char
+  else
+    HTTP_RESPONSE_HEADERS["content-type"]="${filetype}"
+  fi
+  if [[ "${HTTP_RESPONSE_HEADERS["content-type"]}" =~ html && "$routetype" != cgi ]]; then 
+    local isdoctype=false ishtml=false isbody=false iscbody=false ishead=false ischtml=false ischead=false
+    local output=$(cat "$filename")
+    if [[ "${output::6}" != '<html>' && "${output::15}" != '<!DOCTYPE html>' ]]; then
+    #local csrf=$(sessionGet "$SESSION_ID")
+    #
+      cat << EOF > "$filename" 
+<!DOCTYPE html>
+<html> 
+  <head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    $FICTION_HEAD
+    $(
+      "${INCLUDE_DOM:-true}" && echo "<script>$(cat "$FICTION_PATH/dom.js")</script>";
+      "${INCLUDE_TAILWINDCSS:-true}" && echo '<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>';
+      "${INCLUDE_LUCIDE:-true}" && echo '<script src="https://unpkg.com/lucide@latest"></script>';
+      echo '</head>';
+      [[ "${output::5}" == \<body ]] && echo "$output" || echo "<body>$output</body>";
+      "${INCLUDE_LUCIDE:=true}" && echo '<script>lucide.createIcons();</script>'
+     )
+</html>
+EOF
+    fi
+  fi
+
+  read size filename < <(wc -c "$filename")
+  HTTP_RESPONSE_HEADERS["content-length"]="${size:=0}"
+  if [[ "$routetype" != "cgi" ]]; then
+    for key in "${!HTTP_RESPONSE_HEADERS[@]}"; do
+      printf '%s: %s\n' "${key,,}" "${HTTP_RESPONSE_HEADERS[$key]}"
+    done
+    for value in "${cookie_to_send[@]}"; do
+      printf 'Set-Cookie: %s\n' "$value"
+    done
+    printf "\n"
+  fi 
+  cat "$filename"
+  printf "\n"
+  rm "$filename"
+  unset routetype
+}
+
+
+function FictionRequestHandler() {
+    [[ "$REQUEST_PATH" =~ *".."*|*"~"* ]] && show_404
     [ "${REQUEST_PATH::2}" == "//" ] && REQUEST_PATH="${REQUEST_PATH:1}";
     [ "${REQUEST_PATH::1}" != "/" ] && REQUEST_PATH="/${REQUEST_PATH}";
     [[ "$REQUEST_METHOD" == 'POST' && -n "${HTTP_HEADERS['fiction-action']}" ]] && REQUEST_PATH="/${HTTP_HEADERS['fiction-action']}";
@@ -482,14 +485,28 @@ function FictionRequestHandler() {
         ou=$(echo "$routes" | grep "$REQUEST_PATH");
         ou2=$(echo "$routes" | grep "dynamic");
         if [[ "$ou" ]]; then
-            read type filetype route func <<< "$ou";
-            read func funcargs <<< "$func";
-            FICTION_ROUTE="$REQUEST_PATH";
+          read type filetype route func <<< "$ou";
+          read func funcargs <<< "$func";
+          FICTION_ROUTE="$REQUEST_PATH";
             if [[ $type == cgi ]]; then
-                local headers=;
-                SERVER_SOFTWARE="Fiction $FICTION_VERSION" REQUEST_METHOD="$REQUEST_METHOD" REMOTE_ADDR="$REMOTE_ADDR" FICTION_ROUTE="$REQUEST_PATH" REQUEST_PATH="$REQUEST_PATH" SCRIPT_FILENAME="$func" HTTP_USER_AGENT="${HTTP_HEADERS['user-agent']}" $func;
+              local headers=;
+              (
+                SERVER_SOFTWARE="Fiction $FICTION_VERSION" \
+                REQUEST_METHOD="$REQUEST_METHOD" \
+                REMOTE_ADDR="$REMOTE_ADDR" \
+                FICTION_ROUTE="$REQUEST_PATH" \
+                REQUEST_PATH="$REQUEST_PATH" \
+                CONTENT_LENGTH="${HTTP_HEADERS['content-length']}" \
+                SCRIPT_NAME="$func" \
+                HTTPS="$HTTPS" \
+                SCRIPT_FILENAME="$(basename -f "$func")" \
+                HTTP_USER_AGENT="${HTTP_HEADERS['user-agent']}" \
+                HTTP_COOKIE="${HTTP_HEADERS['cookie']}" \
+                $func;
+              )
             else
-                [[ "$func" == 'echo' ]] && $func ${funcargs//\"/\\\"} || $func "${funcargs//\"/\\\"}";
+              parsePost
+              [[ "$func" == 'echo' ]] && $func ${funcargs//\"/\\\"} || $func "${funcargs//\"/\\\"}";
             fi
         else
             if [[ -n "$ou2" ]]; then
@@ -500,7 +517,6 @@ function FictionRequestHandler() {
                 if [[ -n "$route" ]]; then
                     IFS=' ' read _ filetype route func funcargs <<< "$route";
                     IFS='/' read -ra route_keys <<< "${route#\/}";
-                    IFS='/' read -ra path_keys <<< "${REQUEST_PATH#\/}";
                     for subroute in ${path_keys[@]};
                     do
                         if [[ ${route_keys[$i]} =~ '[' ]]; then
@@ -516,6 +532,7 @@ function FictionRequestHandler() {
                     if ((matching_slugs > 0)); then
                         read func funcargs <<< "$func";
                         export FICTION_ROUTE="$REQUEST_PATH";
+                        postData
                         [[ "$func" == 'echo' ]] && $func ${funcargs//\"/\\\"} || $func "${funcargs//\"/\\\"}";
                     else
                         show_404;
@@ -695,13 +712,13 @@ function FictionServeDir() {
             if [ -d "$item" ]; then
                 [[ "${5:-true}" == true ]] && FictionServeDir "${item}" "${ROUTE_APPEND}/${item##*/}" > /dev/null;
             else
-                ROUTEPATH="${item}";
+                ROUTEPATH="${item}"
                 if [ "${ROUTEPATH::1}" == "." ]; then
                     ROUTEPATH="${ROUTEPATH:1}";
-                fi;
+                fi
                 FictionServeFile "${item}" "${ROUTE_APPEND}/${ROUTEPATH##*/}" "$type" > /dev/null;
-            fi;
-        done;
+            fi
+        done
     else
         error "$1 is not a directory"
         return 1;
@@ -756,6 +773,7 @@ function FictionHttpServer () {
                 ;;
             esac
         done
+        unset key value
     fi
     echo -e "\nStarting Fiction (${_green}$FICTION_VERSION${_nc})"
     mktmpDir
@@ -783,7 +801,7 @@ function FictionHttpServer () {
         nc | netcat | ncat | socat)
             echo "FICTION_PATH='$FICTION_PATH'" >> "$serverTmpDir/worker.sh";
             declare | \
-            grep -vE '(SSH_|^PWD|^OLDPWD|^TERM|^HOME|^USER|^PATH|^BASH_*|^BASHOPTS|^EUID|^PPID|^SHELLOPTS|^UID)' >>"$serverTmpDir/worker.sh"
+            grep -vE '(^KDE_*|^GTK*|^XDG*|^XKB*|^PAM*|^KONSOLE*|^SSH_*|^QT_*|^PWD|^OLDPWD|^TERM|^HOME|^USER|^PATH|^BASH_*|^BASHOPTS|^EUID|^PPID|^SHELLOPTS|^UID)' >>"$serverTmpDir/worker.sh"
             chmod +x "$serverTmpDir/worker.sh";
             cat >> "$serverTmpDir/job.sh" <<EOF
 #!/bin/bash
