@@ -333,7 +333,7 @@ respond() {
 }
 
 parsePost() {
-  if [[ "$REQUEST_METHOD" == "POST"|"PATCH"|"PUT" ]] && ((${HTTP_HEADERS['content-length']:=0} > 0)); then
+  if [[ "$REQUEST_METHOD" =~ "POST"|"PATCH"|"PUT" ]] && ((${HTTP_HEADERS['content-length']:=0} > 0)); then
     local entry
     if [[ "${HTTP_HEADERS["content-type"]}" == "application/x-www-form-urlencoded" ]]; then
       IFS='&' read -rN "${HTTP_HEADERS["Content-Length"]}" -a data
