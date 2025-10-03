@@ -92,14 +92,6 @@ function error() {
 
 function addServerAction() {
   [ -z "$1" ] && return 
-  if [[ "$4" ]]; then 
-    for opt in "$4"; do 
-      IFS='=' read key value <<< "$opt"
-      case "$key" in 
-        "csrf") _csrf="$value" ;;
-      esac
-    done
-  fi
   local path="/__server-action_$(echo "$1" | sha256sum)"
   local path2="$(sha256sum <<< "${path::-3}")"
   [[ ! "$(__d "$serverTmpDir/.routes")" =~ ${path2::-3} ]] && FictionServePath "${path::-3}" "$1" "" api >&2
