@@ -5,7 +5,7 @@ _white="$(tput setaf 255)"
 _bold="$(tput bold)"
 _nc="$(tput sgr 0)"
 function _render() {
-local level=0 flevel=0 inscript=false output='' i=0 tag=''
+local dom=false level=0 flevel=0 inscript=false output='' i=0 tag=''
 local -a parent=() extra=()
 function @error() {
   [[ ${#FUNCNAME[@]} > 1 ]] && echo -n "(${FUNCNAME[1]}) " >&2
@@ -30,18 +30,17 @@ while read -r line; do
       read tag _ <<< "$line"
       if [[ "$tag" == '<script' ]]; then 
         if [[ "$line" =~ 'bash' ]]; then # if lang="bash", the code will be directly executed
-          inscript=true
+          inscript=bash
         elif [[ "$line" =~ 'dom' ]]; then # if lang="dom", the code will be executed but added as js code
-          local dom=true;
+          inscript=dom
           output+=$'printf "%s" "<script>"\n';
+        else 
+          inscript=js
+          output+="printf '%s\n' '$line' "$'\n';
         fi
       elif [[ "$tag" =~ '</script' ]]; then 
-        if [[ "$inscript" == true ]]; then 
+          [[ "$inscript" == dom || "$inscript" == js ]] && output+=$'printf "%s" "</script>"\n';
           inscript=false
-        else
-          output+=$'printf "%s" "</script>"\n';
-          [[ "$dom" ]] && unset dom
-        fi
       else
           if [[ "$line" =~ on: ]]; then
             line="${line%%\>}";
@@ -74,8 +73,10 @@ while read -r line; do
     fi 
   else
     # skip reserved words or code to execute, replace {placeholder} if <a data-bind="placeholder"></a> for bindState()
-    if [[ "$line" =~ '{@children}'|'{cache}'|'{/cache}'|'@return' || "$inscript" == true || "$dom" == true ]]; then 
+    if [[ "$line" =~ '{@children}'|'{cache}'|'{/cache}'|'@return' || "$inscript" =~ bash|dom ]]; then 
       output+="$line"$'\n'
+    elif [[ "$inscript" == js ]]; then
+      output+="printf '%s\n' \"${line//\"/\\\"}\""$'\n'
     else 
       [[ "$line" =~ '{' && "$line" =~ '}' ]] && line=$(echo "$line" | sed 's|{\([^[:space:]]\+\)}|<a data-bind="\1"></a>|g')
       output+="printf '%s' \"${line//\"/\\\"}\""$'\n'
@@ -128,7 +129,7 @@ done <<< "$out2"
 [[ "$BASHX_VERBOSE" ]] && { 
   printf "%s\n" "[$_green✓$_nc] Compiled $1 ($(($(date +%s%3N)-time))ms)" 
 }
-unset input out out2 block time
+unset input out out2 block time block1 render_output
 if [[ "$2" ]]; then 
   echo "$1:"
   echo "${out1//#NEWLIN#/$'\n'}" 
@@ -137,7 +138,7 @@ else
   BASHX_FILENAME="$(readlink -f "$1")"
   eval "${out1//#NEWLIN#/$'\n'}"
 fi
-unset out out1 out2 block
+unset out out1 out2 block block1
 #set -x
 }
 function @parse {
@@ -167,6 +168,7 @@ function @parse {
         printf -v "$key" "%s" "$value"
       esac
   done
+  unset arg key value
 }
 
 function @exclude {

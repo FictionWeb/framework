@@ -71,6 +71,29 @@ function mktmpDir() {
   fi
 }
 
+function createState() {
+    [[ -z "$1" || -z "$2" ]] && return
+    local name="${1//\'}" value="${2//\'}"
+    name="${name//\"}"
+    value="${value//\"}"
+    printf "const $name = useState('$value'); " 
+    printf -v "$name" "$value"
+    if [[ $3 ]]; then
+      el="${3//\'}"
+      el="${el//\"}"
+      printf "bindState(${1//\"}, '$el'); " 
+    fi
+}
+
+function setState() {
+    [[ -z "$1" || -z "$2" ]] && return
+    local name="${1//\'}" value="${2//\'}"
+    name="${name//\"}"
+    value="${value//\"}"
+    printf "$name.set('$value'); " 
+    printf -v "$name" "%s" "$value"
+}
+
 function sendAction() {
   [[ "${2::2}" == '{"' ]] && local json="{\"type\":\"$1\",${3:+\"id\":\"$3\",}\"data\":$2 }" || local json="{\"type\":\"$1\",${3:+\"id\":\"$3\",}\"data\":\"$2\" }"
   echo "${json}"

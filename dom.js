@@ -19,7 +19,6 @@ const stateRegistry = {};
 
 function bindState(state, key) {
   state.subscribe((value) => {
-    console.log(document.querySelectorAll(`[data-bind="${key}"]`))
     document.querySelectorAll(`[data-bind="${key}"]`).forEach((el) => {
       el.textContent = value;
     });
