@@ -1,13 +1,15 @@
 #!/bin/bash
-# The Fiction(R) Library!
-# Http Server
+# The Fiction(R) Library, powered by insane people
 FICTION_HTTP_ERROR_BEGIN="<html style='font-family:sans-serif;background-color:#212121;color:white;'><title>Error</title><center>"
 FICTION_HTTP_ERROR_END="<hr><p>Fiction Web Server</h1></center></html>"
 FICTION_PATH=$(readlink -f "${BASH_SOURCE[0]:-$0}")
 FICTION_PATH="${FICTION_PATH//fiction.so.sh}"
-bashx_path="$FICTION_PATH/modules/bashx"
-default_index="index.shx"
+FICTION_MODULES=""
 FICTION_META=""
+FICTION_VERSION="v1.0.0-prerelease"
+
+bashx_path="$FICTION_PATH/modules/bashx/bashx"
+default_index="index.shx"
 workerargs=""
 core=""
 _green="$(tput setaf 2)"
@@ -15,8 +17,9 @@ _red="$(tput setaf 1)"
 _white="$(tput setaf 255)"
 _bold="$(tput bold)"
 _nc="$(tput sgr 0)"
-FICTION_VERSION="v1.0.0-prerelease"
 encode_routes="false"
+
+declare -a __funcs;
 
 # Helper functions
 function @cache() {
@@ -426,6 +429,8 @@ parseAndPrint() {
 
 
 buildResponse() {
+ setHeader "Cross-Origin-Opener-Policy" "same-origin"
+  setHeader "Cross-Origin-Embedder-Policy" "require-corp"
   filename="$serverTmpDir/output_$RANDOM"
   [ -f "$filename" ] && rm "$filename"
   FictionRequestHandler >"$filename"
@@ -445,6 +450,7 @@ buildResponse() {
   else
     HTTP_RESPONSE_HEADERS["content-type"]="${filetype}"
   fi
+
   if [[ "${HTTP_RESPONSE_HEADERS["content-type"]}" =~ html && "$routetype" != cgi ]]; then 
     local isdoctype=false ishtml=false isbody=false iscbody=false ishead=false ischtml=false ischead=false
     local output=$(cat "$filename")
@@ -456,20 +462,36 @@ buildResponse() {
 <html> 
   <head>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script>
+      let queue = [];
+      let stdoutBuffer = "";
+      let stderrBuffer = "";
+      window.execute = async function execute(command,id) {
+        if (id == undefined) id = null; 
+        return new Promise(() => queue.push([command,id]));
+      }
+    </script>
     $FICTION_HEAD
     $(
-      "${INCLUDE_DOM:-true}" && echo "<script>$(cat "$FICTION_PATH/dom.js")</script>";
+      "${INCLUDE_DOM:-false}" && echo "<script>$(cat "$FICTION_PATH/dom.js")</script>";
+      if "${INCLUDE_WASM:-false}"; then 
+        if declare -F wasmBundle >/dev/null; then
+          exportVariable FICTION_VERSION FICTION_ROUTE
+          wasmBundle
+        else 
+          error "Cannot load WASM module, file isn't loaded or not found"
+        fi
+      fi;
       "${INCLUDE_TAILWINDCSS:-true}" && echo '<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>';
-      "${INCLUDE_LUCIDE:-true}" && echo '<script src="https://unpkg.com/lucide@latest"></script>';
+      "${INCLUDE_LUCIDE:=true}" && echo '<script src="https://unpkg.com/lucide@latest"></script>';
       echo '</head>';
       [[ "${output::5}" == \<body ]] && echo "$output" || echo "<body>$output</body>";
-      "${INCLUDE_LUCIDE:=true}" && echo '<script>lucide.createIcons();</script>'
-     )
+      "${INCLUDE_LUCIDE}" && echo '<script>lucide.createIcons();</script>'
+      )
 </html>
 EOF
     fi
   fi
-
   read size filename < <(wc -c "$filename")
   HTTP_RESPONSE_HEADERS["content-length"]="${size:=0}"
   if [[ "$routetype" != "cgi" ]]; then
@@ -635,13 +657,14 @@ function parseAndPrint() {
   
   buildResponse
   unset POST GET
-  "${verbose:=false}" && echo "[$(date)] $REQUEST_METHOD $REQUEST_PATH $status $(($(date +%s%3N)-time1))ms" >&2
+  "${verbose:=false}" && echo "[$(date)] ${EXPOSE_ADDR:+$REMOTE_ADDR} $REQUEST_METHOD $REQUEST_PATH $status $(($(date +%s%3N)-time1))ms" >&2
   unset HTTP_VERSION REQUEST_METHOD REQUEST_PATH status
+  exit
 }
 
 # HelperFns
 function FictionServePath() {
-  # FictionServePath <from> <to:fn> <as> <type?>
+  # FictionServePath <from> <to:fn> <as> <type?> <headers?>
   [[ -z "$1" || -z "$2" ]] && return 1
   mktmpDir
   local type="${4:-static}"
@@ -697,7 +720,15 @@ function FictionServeCGI() {
 function FictionServeFile() { 
     [ ! -f "$1" ] && error "$1 is not a file" && return 1
     local ROUTEFN="FR$(uuidgen)";
-    eval "${ROUTEFN}(){ cat \"$1\"; }";
+    if [[ "$4" ]]; then 
+      declare -n __headers="$4"
+      local hline='';
+      for header in ${!__headers[@]}; do
+        hline+=" setHeader '$header' '${__headers[$header]}'";
+      done 
+      unset headers
+    fi 
+    eval "${ROUTEFN}(){ ${4:+$hline;} cat \"$1\"; }";
     local ROUTEPATH;
     if [[ -n "$2" ]]; then
         ROUTEPATH="$2";
@@ -798,10 +829,9 @@ function FictionHttpServer () {
                 echo "HTTPS is not supported in bash mode" 1>&2;
                 exit 1;
             else
-                [ ! -f "$FICTION_PATH/accept" ] && error "\`accept\` is not found in $FICTION_PATH" && return 1;
-                enable -f "$FICTION_PATH/modules/accept" accept;
+                [ ! -f "$accept_path" ] && error "\`accept\` is not found in $FICTION_PATH" && return 1;
+                enable -f "$accept_path" accept;
                 [[ "$port" = 80 ]] && echo -e "\nServer address: http://$address (single connection mode)" || echo -e "\nServer address: http://$address:$port (single connection mode)";
-                #echo "$(tput setaf 3)Warning:${_nc} In current mode the server manages only one connection at the time"
                 while true; do
                     accept -b "$BIND_ADDRESS" -r REMOTE_ADDR "${HTTP_PORT}";
                     if [[ $? = 0 && -n "$ACCEPT_FD" ]]; then
@@ -829,7 +859,8 @@ while read -r val; do
 done
 [[ "\${value// }" -gt 1 ]] && { read -rn \${value// } -t1 data; [[ \${#data} > 1 ]] && HEADERS+="\${data//$'\r'/}"$'\n'; unset key value data; }
 [[ "\$NCAT_REMOTE_ADDR" ]] && REMOTE_ADDR="\$NCAT_REMOTE_ADDR" || REMOTE_ADDR="\$FICTION_PEERADDR"
-. $workerargs $serverTmpDir/worker.sh
+$([[ $workerargs ]] && echo 'set $workerargs')
+. $serverTmpDir/worker.sh
 parseAndPrint <<<"\$HEADERS"
 EOF
 
@@ -842,7 +873,7 @@ EOF
                     if "${HTTPS:=false}"; then
                         [[ "$port" = 443 ]] && echo -n "https://$address" || echo -n "https://$address:$port";
                         echo " (forking mode)";
-                        exec -a "fiction" socat openssl-listen:"$HTTP_PORT",bind="$BIND_ADDRESS",verify=0,cert="$SSL_CERT",key="$SSL_KEY",reuseaddr,fork SYSTEM:"$serverTmpDir/job.sh";
+                        exec -a "fiction" socat openssl-listen:"$HTTP_PORT",bind="$BIND_ADDRESS",verify=0,${SSL_CERT:+cert="$SSL_CERT",}${SSL_KEY:+key="$SSL_KEY",}reuseaddr,fork SYSTEM:"$serverTmpDir/job.sh";
                     else
                         [[ "$port" = 80 ]] && echo -n "http://$address" || echo -n "http://$address:$port";
                         echo " (forking mode)";
@@ -854,7 +885,7 @@ EOF
                     if "${HTTPS:=false}"; then
                         [[ "$port" = 443 ]] && echo -n "https://$address" || echo -n "https://$address:$port";
                         echo " (forking mode)";
-                        exec -a "fiction" ncat -klp "$HTTP_PORT" -c "$serverTmpDir/job.sh" --ssl --ssl-cert "$SSL_CERT" --ssl-key "$SSL_KEY";
+                        exec -a "fiction" ncat -klp "$HTTP_PORT" -c "$serverTmpDir/job.sh" --ssl ${SSL_CERT:+--ssl-cert "$SSL_CERT"} ${SSL_KEY:+--ssl-key "$SSL_KEY"};
                     else
                         [[ "$port" = 80 ]] && echo -n "http://$address" || echo -n "http://$address:$port";
                         echo " (forking mode)";
@@ -880,6 +911,32 @@ EOF
     esac
 }
 
+for file in $FICTION_PATH/modules/*; do
+  case "${file##*/}" in 
+    accept)    
+      [[ -v accept_path ]] && continue
+      accept_path="$file" 
+    ;;
+    bashx)
+      [[ -v bashx_path ]] && continue
+      if [[ -f "$file/bashx" ]]; then
+        bashx_path="$file/bashx"
+        source "$bashx_path"
+      else 
+        error "cannot load bashx ($bashx_path)"
+      fi
+    ;;
+    bash-wasm)
+      [[ -v bash_wasm_path ]] && continue
+      if [[ -f "$file/index.sh" ]]; then
+        bash_wasm_path="$file"
+        source "$bash_wasm_path/index.sh"
+      else 
+         error "cannot load WASM module ($file/index.sh)"
+      fi
+    ;;
+  esac 
+done
 
 if ! (return 0 2>/dev/null); then
   case "$1" in 
@@ -954,7 +1011,8 @@ else
     if ! declare -F bashx >/dev/null 2>&1; then
         if [ -f "$bashx_path" ]; then 
           BASHX_NESTED=true
-          bash "$bashx_path" "${BASH_SOURCE[-1]}"
+          source "$bashx_path"
+          bashx "${BASH_SOURCE[-1]}"
           exit
         else 
           error "cannot load bashx ($bashx_path)"
