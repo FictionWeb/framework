@@ -47,7 +47,7 @@ function @cache() {
   if [ -z "$DO_NOT_RERUN" ] && [ -n "$(declare -F "\\$1")" ]; then
     DO_NOT_RERUN=1 @cache "\\$1"
     return
-  fi 
+  fi
 }
 
 function @prerender {
@@ -62,7 +62,7 @@ function @prerender {
 }
 
 function mktmpDir() {
-  if [[ -z "$serverTmpDir" ]]; then 
+  if [[ -z "$serverTmpDir" ]]; then
     ! pidof fiction >/dev/null && [ -d "$FICTION_PATH/.fiction" ] && rm -rf $FICTION_PATH/.fiction/* 2>&1 >/dev/null
     serverTmpDir="$FICTION_PATH/.fiction/tmp_$(openssl rand -hex 16)"
     mkdir -p "$serverTmpDir"
@@ -79,12 +79,12 @@ function createState() {
     local name="${1//\'}" value="${2//\'}"
     name="${name//\"}"
     value="${value//\"}"
-    printf "const $name = useState('$value'); " 
+    printf "const $name = useState('$value'); "
     printf -v "$name" "$value"
     if [[ $3 ]]; then
       el="${3//\'}"
       el="${el//\"}"
-      printf "bindState(${1//\"}, '$el'); " 
+      printf "bindState(${1//\"}, '$el'); "
     fi
 }
 
@@ -93,7 +93,7 @@ function setState() {
     local name="${1//\'}" value="${2//\'}"
     name="${name//\"}"
     value="${value//\"}"
-    printf "$name.set('$value'); " 
+    printf "$name.set('$value'); "
     printf -v "$name" "%s" "$value"
 }
 
@@ -117,15 +117,15 @@ function error() {
 }
 
 function addServerAction() {
-  [ -z "$1" ] && return 
+  [ -z "$1" ] && return
   local path="/__server-action_$(echo "$1" | sha256sum)"
   local path2="$(sha256sum <<< "${path::-3}")"
   [[ ! "$(__d "$serverTmpDir/.routes")" =~ ${path2::-3} ]] && FictionServePath "${path::-3}" "$1" "" api >&2
-  [[ $? == 0 ]] && printf "%s" "serverAction('${path::-3}')" || return 
+  [[ $? == 0 ]] && printf "%s" "serverAction('${path::-3}')" || return
   unset path json
 }
 
-# ---- bash2json integration ---- 
+# ---- bash2json integration ----
 json_list() {
 local input="${1# }"
 local sub="$2"
@@ -134,51 +134,51 @@ if [[ "${input:0:1}" = '{' ]]; then
     while IFS='' read -r -d '' -n 1 char; do
       [[ "$quoted" = 0 && "$char" == " " ]] && continue
       [[ "$prevchar" == '\' ]] && escaped=true && continue
-       if "$escaped"; then 
+       if "$escaped"; then
           escaped=false
-        elif ((quoted != 0)); then 
-          [[ "$char" == '"' ]] && ((quoted ^= 1)) 
-        else 
+        elif ((quoted != 0)); then
+          [[ "$char" == '"' ]] && ((quoted ^= 1))
+        else
         if (( depth == 1 )); then
           case "$char" in
           ':') result+=" " && continue ;;
           ',') result+=$'\n' && continue ;;
           esac
         fi
-          case "$char" in 
+          case "$char" in
             '"') ((quoted ^= 1)) ;;
             '{'|'[') ((++depth)); ((depth == 1)) && continue ;;
             '}'|']') ((--depth)); ((depth == 0)) && continue ;;
-          esac 
+          esac
       fi
       result+="$char"
-      ((depth == 0)) && break 
+      ((depth == 0)) && break
   done <<<"$input"
   json_list_output="$result"
 elif [[ "${input:0:1}" = '[' ]]; then
     while IFS='' read -r -d '' -n 1 char; do
       [[ "$quoted" = 0 && "$char" == " " ]] && continue
       [[ "$prevchar" == '\' ]] && escaped=true && continue
-      if "$escaped"; then 
+      if "$escaped"; then
         escaped=false
-      elif ((quoted != 0)); then 
-        [[ "$char" == '"' ]] && ((quoted ^= 1)) 
-      else 
-          case "$char" in 
+      elif ((quoted != 0)); then
+        [[ "$char" == '"' ]] && ((quoted ^= 1))
+      else
+          case "$char" in
           '"') ((quoted ^= 1)) ;;
           '\') escaped=true ;;
-          ',') result+=$'\n' && continue ;; 
+          ',') result+=$'\n' && continue ;;
           '[') ((++depth)); ((depth == 1)) && continue ;;
           ']')  ((--depth)); ((depth == 0)) && break ;;
           '{') ((++depth)) ;;
           '}') ((--depth)) ;;
-          esac 
+          esac
       fi
         result+="$char"
         ((depth == 0)) && break
   done <<<"$input"
   json_list_output="$result"
-else 
+else
   json_list_output="$input"
 fi
 ! "${sub:=false}" && echo "$json_list_output"
@@ -191,15 +191,15 @@ json_to_arr() {
     [ -z "$2" ] && local output_arr=array_$RANDOM || local output_arr="$2"
     json_list "$json" true
     mapfile  -t json_to_arr_array < <(printf '%b' "${json_list_output}")
-    if [[ "${json:0:1}" == '{' ]]; then 
+    if [[ "${json:0:1}" == '{' ]]; then
       [ -z "$3" ] && result+="declare -Ag $output_arr=(" || local parentkey="${3//\"}."
       for line in "${json_to_arr_array[@]}"; do
         IFS=' ' read key value <<< "$line"
         [ -z "$key" ] && continue || key="${key//\"}"
-        if [[ ${value:0:1} == "{" ]]; then 
+        if [[ ${value:0:1} == "{" ]]; then
           $FUNCNAME "$value" "" "${parentkey}${key}" true
           result+="$json_to_arr_output"
-        else 
+        else
           [[ "${value: -1}" == '"' ]] && result+="[${parentkey}${key}]=$value " || result+="[${parentkey}${key}]='$value' "
       fi
       done
@@ -278,16 +278,16 @@ cookieSet() {
 sessionSet() {
   if [ ! -f "$serverTmpDir/.sessions" ]; then
     : >"$serverTmpDir/.sessions"
-    local session="$(generate_session_id)" 
+    local session="$(generate_session_id)"
     local ssession=$(echo "$session" | sha256sum)
     local tok="$(generate_csrf_token | base64 -w 0)"
     __e "${ssession::-3} $tok" "$serverTmpDir/.sessions"
     cookieSet "session_id=${session}; HttpOnly; max-age=5000"
     SESSION_ID="${session}"
     unset session tok
-  else 
+  else
     local ou="$(__d "$serverTmpDir/.sessions")"
-    local session="$(generate_session_id)" 
+    local session="$(generate_session_id)"
     local ssession=$(echo "$session" | sha256sum)
     local tok="$(generate_csrf_token | base64 -w 0)"
      ou+=$'\n'"${ssession::-3} $tok"
@@ -359,9 +359,9 @@ parsePost() {
         entry="${entry%%$'\r'}"
         POST["${entry%%=*}"]="${entry#*:}"
       done
-    elif [[ "${HTTP_HEADERS["content-type"]}" == "application/json" ]]; then 
+    elif [[ "${HTTP_HEADERS["content-type"]}" == "application/json" ]]; then
       read -N "${HTTP_HEADERS["content-length"]}" data
-      eval "$(json_to_arr "${data%%$'\r'}" POST)" 
+      eval "$(json_to_arr "${data%%$'\r'}" POST)"
     else
       read -rN "${HTTP_HEADERS["content-length"]}" data
       POST["raw"]="${data%%$'\r'}"
@@ -375,13 +375,13 @@ parseAndPrint() {
   verbose=true
   local REQUEST_METHOD REQUEST_PATH HTTP_VERSION QUERY_STRING
   local -A HTTP_HEADERS
-  declare -Ag POST 
+  declare -Ag POST
   declare -Ag GET
   local -A HTTP_RESPONSE_HEADERS
   local -A COOKIE
   local -A SESSIONS
   local -a cookie_to_send
-  
+
   read -r REQUEST_METHOD REQUEST_PATH HTTP_VERSION
   HTTP_VERSION="${HTTP_VERSION%%$'\r'}"
   [[ "$HTTP_VERSION" =~ HTTP/[0-9]\.?[0-9]? ]] && HTTP_VERSION="${BASH_REMATCH[0]}"
@@ -420,7 +420,7 @@ parseAndPrint() {
   done
   unset entry cookie key value
 
-  
+
   buildResponse
   unset POST GET
   "${verbose:=false}" && echo "[$(date)] $HTTP_VERSION $REQUEST_METHOD $REQUEST_PATH $status $(($(date +%s%3N)-time1))ms" >&2
@@ -429,8 +429,6 @@ parseAndPrint() {
 
 
 buildResponse() {
- setHeader "Cross-Origin-Opener-Policy" "same-origin"
-  setHeader "Cross-Origin-Embedder-Policy" "require-corp"
   filename="$serverTmpDir/output_$RANDOM"
   [ -f "$filename" ] && rm "$filename"
   FictionRequestHandler >"$filename"
@@ -441,7 +439,7 @@ buildResponse() {
   unset 'HTTP_RESPONSE_HEADERS["status"]'
 
   # printf '%s\n' "$(<"$filename")"
-     # cat "$filename" >&2 
+     # cat "$filename" >&2
   if [[ -z "$filetype" || "$filetype" == "auto" ]]; then
     local _ char type="$(file --mime "$filename")"
     IFS=' ' read _ type char <<<"$type"
@@ -451,15 +449,15 @@ buildResponse() {
     HTTP_RESPONSE_HEADERS["content-type"]="${filetype}"
   fi
 
-  if [[ "${HTTP_RESPONSE_HEADERS["content-type"]}" =~ html && "$routetype" != cgi ]]; then 
+  if [[ "${HTTP_RESPONSE_HEADERS["content-type"]}" =~ html && "$routetype" != cgi ]]; then
     local isdoctype=false ishtml=false isbody=false iscbody=false ishead=false ischtml=false ischead=false
     local output=$(cat "$filename")
     if [[ "${output::6}" != '<html>' && "${output::15}" != '<!DOCTYPE html>' ]]; then
     #local csrf=$(sessionGet "$SESSION_ID")
     #
-      cat << EOF > "$filename" 
+      cat << EOF > "$filename"
 <!DOCTYPE html>
-<html> 
+<html>
   <head>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <script>
@@ -467,18 +465,21 @@ buildResponse() {
       let stdoutBuffer = "";
       let stderrBuffer = "";
       window.execute = async function execute(command,id) {
-        if (id == undefined) id = null; 
+        if (id == undefined) id = null;
         return new Promise(() => queue.push([command,id]));
       }
     </script>
     $FICTION_HEAD
     $(
-      "${INCLUDE_DOM:-false}" && echo "<script>$(cat "$FICTION_PATH/dom.js")</script>";
-      if "${INCLUDE_WASM:-false}"; then 
+      "${INCLUDE_DOM:-false}" && echo "<script>$(cat "$dom_path")</script>";
+      if "${INCLUDE_WASM:-false}"; then
         if declare -F wasmBundle >/dev/null; then
+          setHeader "Cross-Origin-Opener-Policy" "same-origin"
+          setHeader "Cross-Origin-Embedder-Policy" "require-corp"
+          [[ -v FICTION_ROUTE ]] || FICTION_ROUTE="$REQUEST_PATH"
           exportVariable FICTION_VERSION FICTION_ROUTE
           wasmBundle
-        else 
+        else
           error "Cannot load WASM module, file isn't loaded or not found"
         fi
       fi;
@@ -502,7 +503,7 @@ EOF
       printf 'Set-Cookie: %s\n' "$value"
     done
     printf "\n"
-  fi 
+  fi
   cat "$filename"
   printf "\n"
   rm "$filename"
@@ -511,7 +512,7 @@ EOF
 
 
 function FictionRequestHandler() {
-    [[ "$REQUEST_PATH" =~ *".."*|*"~"* ]] && show_404
+    [[ "$REQUEST_PATH" =~ ".."|"~" ]] && show_404
     [ "${REQUEST_PATH::2}" == "//" ] && REQUEST_PATH="${REQUEST_PATH:1}";
     [ "${REQUEST_PATH::1}" != "/" ] && REQUEST_PATH="/${REQUEST_PATH}";
     [[ "$REQUEST_METHOD" == 'POST' && -n "${HTTP_HEADERS['fiction-action']}" ]] && REQUEST_PATH="/${HTTP_HEADERS['fiction-action']}";
@@ -592,13 +593,13 @@ function parseAndPrint() {
   verbose=true
   local REQUEST_METHOD REQUEST_PATH HTTP_VERSION QUERY_STRING
   local -A HTTP_HEADERS
-  declare -Ag POST 
+  declare -Ag POST
   declare -Ag GET
   local -A HTTP_RESPONSE_HEADERS
   local -A COOKIE
   local -A SESSIONS
   local -a cookie_to_send
-  
+
   read -r REQUEST_METHOD REQUEST_PATH HTTP_VERSION
   HTTP_VERSION="${HTTP_VERSION%%$'\r'}"
   [[ "$HTTP_VERSION" =~ HTTP/[0-9]\.?[0-9]? ]] && HTTP_VERSION="${BASH_REMATCH[0]}"
@@ -645,16 +646,16 @@ function parseAndPrint() {
         entry="${entry%%$'\r'}"
         POST["${entry%%=*}"]="${entry#*:}"
       done
-    elif [[ "${HTTP_HEADERS["content-type"]}" == "application/json" ]]; then 
+    elif [[ "${HTTP_HEADERS["content-type"]}" == "application/json" ]]; then
       read -N "${HTTP_HEADERS["content-length"]}" data
-      eval $(json_to_arr "${data%%$'\r'}" POST) 
+      eval $(json_to_arr "${data%%$'\r'}" POST)
     else
       read -rN "${HTTP_HEADERS["content-length"]}" data
       POST["raw"]="${data%%$'\r'}"
     fi
     unset entry
   fi
-  
+
   buildResponse
   unset POST GET
   "${verbose:=false}" && echo "[$(date)] ${EXPOSE_ADDR:+$REMOTE_ADDR} $REQUEST_METHOD $REQUEST_PATH $status $(($(date +%s%3N)-time1))ms" >&2
@@ -668,11 +669,11 @@ function FictionServePath() {
   [[ -z "$1" || -z "$2" ]] && return 1
   mktmpDir
   local type="${4:-static}"
-  if [[ "$FICTION_BUILD" ]]; then 
+  if [[ "$FICTION_BUILD" ]]; then
     [[ "$3" == text/html ]] || return
   fi
 
-  case "$type" in 
+  case "$type" in
         api | cgi)
           [[ $type == cgi ]] && [ ! -x "$2" ] && error "$2 is not an executable. Check if the file exists and has executable permission" && return 1
             funcname="$2";
@@ -688,10 +689,10 @@ function FictionServePath() {
     : >"$serverTmpDir/.routes"
     __e "$type ${3:-auto} $route $funcname" "$serverTmpDir/.routes"
     unset ou route funcname
-  else 
+  else
     local ou="$(__d "$serverTmpDir/.routes")"
     rename_fn "$2" "$funcname"
-    ou+=$'\n'"$type ${3:-auto} $route $funcname" 
+    ou+=$'\n'"$type ${3:-auto} $route $funcname"
     __e "$ou" "$serverTmpDir/.routes"
     unset ou route funcname
   fi
@@ -717,18 +718,18 @@ function FictionServeCGI() {
   FictionServePath "${2:-/${1//.\/}}" "$1" "$3" cgi
 }
 
-function FictionServeFile() { 
+function FictionServeFile() {
     [ ! -f "$1" ] && error "$1 is not a file" && return 1
     local ROUTEFN="FR$(uuidgen)";
-    if [[ "$4" ]]; then 
+    if [[ "$4" ]]; then
       declare -n __headers="$4"
       local hline='';
       for header in ${!__headers[@]}; do
-        hline+=" setHeader '$header' '${__headers[$header]}'";
-      done 
+        hline+=" setHeader '$header' '${__headers[$header]}'; ";
+      done
       unset headers
-    fi 
-    eval "${ROUTEFN}(){ ${4:+$hline;} cat \"$1\"; }";
+    fi
+    eval "${ROUTEFN}(){ ${4:+$hline} cat \"$1\"; }";
     local ROUTEPATH;
     if [[ -n "$2" ]]; then
         ROUTEPATH="$2";
@@ -744,7 +745,7 @@ function FictionServeFile() {
     FictionServePath "${ROUTEPATH}" "${ROUTEFN}" "${3:-$(file --mime-type -b "${1}")}"
 }
 
-function FictionServeDir() { 
+function FictionServeDir() {
     local ROUTE_APPEND="$2";
     local download="$3";
     [[ "${download:-true}" == true ]] && local type=application/x-octet-stream;
@@ -773,7 +774,7 @@ function FictionServeDir() {
 
 
 
-function FictionHttpServer () { 
+function FictionHttpServer () {
     [[ "$FICTION_BUILD" ]] && return
     local origaddress="$1";
     if [[ "$origaddress" =~ "https://" ]]; then
@@ -785,45 +786,47 @@ function FictionHttpServer () {
         fi
     fi
     IFS=':' read -r address port <<< "$origaddress";
-    [ -z "$port" ] && { 
+    [ -z "$port" ] && {
         "${HTTPS:=false}" && port=443 || port=80
     };
     BIND_ADDRESS="$address";
     HTTP_PORT="$port";
     shift;
     if [[ "$#" > 0 ]]; then
-        for arg in "${@}";
-        do
-            IFS='=' read key value <<< "$arg";
-            [[ -z "$value" ]] && continue;
-            case "$key" in 
-                ssl)
-                    HTTPS=true
-                ;;
-                ssl_cert)
-                    [ -f "$value" ] && SSL_CERT="$value" || { 
-                        error "ssl_cert: $value: no such file" && return 1
-                    }
-                ;;
-                ssl_key)
-                    [ -f "$value" ] && SSL_KEY="$value" || { 
-                        error "ssl_key: $value: no such file" && return 1
-                    }
-                ;;
-                core)
-                    core="$value"
-                ;;
-                *)
-                    error "Illegal option: $key" 1>&2;
-                    return 1
-                ;;
-            esac
-        done
-        unset key value
+      for arg in "${@}"; do
+        IFS='=' read key value <<< "$arg";
+        [[ -z "$value" ]] && continue;
+        case "$key" in
+          ssl)
+            HTTPS=true
+          ;;
+          ssl_cert)
+            [ -f "$value" ] && SSL_CERT="$value" || {
+              error "ssl_cert: $value: no such file" && return 1
+            }
+          ;;
+          ssl_key)
+            [ -f "$value" ] && SSL_KEY="$value" || {
+              error "ssl_key: $value: no such file" && return 1
+            }
+          ;;
+          include_lucide) INCLUDE_LUCIDE="$value" ;;
+          include_tailwind) INCLUDE_TAILWINDCSS="$value" ;;
+          include_wasm) INCLUDE_WASM="$value" ;;
+          expose_addr) EXPOSE_ADDR="$value" ;;
+          core) core="$value" ;;
+          *)
+            error "Illegal option: $key" 1>&2;
+            return 1
+          ;;
+        esac
+      done
+      unset key value
     fi
     echo -e "\nStarting Fiction (${_green}$FICTION_VERSION${_nc})"
+    [[ "$INCLUDE_WASM" == true && "${HTTPS:=false}" == false ]] && error "Running the website with WASM included on HTTP. Modern browsers will not allow WASM initialization from HTTP origin. In case it's a development server, consider using ncat for a temporary HTTPS server." && return 1
     mktmpDir
-    case "$core" in 
+    case "$core" in
         bash)
             if "${HTTPS:=false}"; then
                 echo "HTTPS is not supported in bash mode" 1>&2;
@@ -867,7 +870,7 @@ EOF
             chmod +x "$serverTmpDir/job.sh";
             trap clean EXIT;
             echo -n "Server address: ";
-            case "${core:-socat}" in 
+            case "${core:-socat}" in
                 socat)
                     which socat >/dev/null || { error "cannot find socat binary" && return 1; }
                     if "${HTTPS:=false}"; then
@@ -912,17 +915,17 @@ EOF
 }
 
 for file in $FICTION_PATH/modules/*; do
-  case "${file##*/}" in 
-    accept)    
+  case "${file##*/}" in
+    accept)
       [[ -v accept_path ]] && continue
-      accept_path="$file" 
+      accept_path="$file"
     ;;
     bashx)
       [[ -v bashx_path ]] && continue
       if [[ -f "$file/bashx" ]]; then
         bashx_path="$file/bashx"
         source "$bashx_path"
-      else 
+      else
         error "cannot load bashx ($bashx_path)"
       fi
     ;;
@@ -931,21 +934,21 @@ for file in $FICTION_PATH/modules/*; do
       if [[ -f "$file/index.sh" ]]; then
         bash_wasm_path="$file"
         source "$bash_wasm_path/index.sh"
-      else 
+      else
          error "cannot load WASM module ($file/index.sh)"
       fi
     ;;
-  esac 
+  esac
 done
 
 if ! (return 0 2>/dev/null); then
-  case "$1" in 
+  case "$1" in
     run)
       if ! declare -F bashx >/dev/null 2>&1; then
-        if [ -f "$bashx_path" ]; then 
+        if [ -f "$bashx_path" ]; then
           BASHX_NESTED=true
           source "$bashx_path"
-        else 
+        else
           error "cannot load bashx ($bashx_path)" >&2
           exit 1
         fi
@@ -958,10 +961,10 @@ if ! (return 0 2>/dev/null); then
       echo "Initializing build..."
       time=$(date +%s%3N)
       if ! declare -F bashx >/dev/null 2>&1; then
-        if [ -f "$bashx_path" ]; then 
+        if [ -f "$bashx_path" ]; then
           BASHX_NESTED=true
           source "$bashx_path"
-        else 
+        else
           error "cannot load bashx ($bashx_path)"
           exit 1
         fi
@@ -971,7 +974,7 @@ if ! (return 0 2>/dev/null); then
       [[ "$3" ]] && target_dir="$3"
       BASHX_VERBOSE=true
       bashx "$default_index"
-      [[ $? > 0 ]] && exit 
+      [[ $? > 0 ]] && exit
       while read route; do
         read type filetype route func <<< "$route";
         echo -ne "(-) $route...\r"
@@ -987,9 +990,9 @@ if ! (return 0 2>/dev/null); then
       done < <(__d "$serverTmpDir/.routes")
       rm -rf "$serverTmpDir"
       echo "Build completed. ($(($(date +%s%3N)-time))ms)"
-    ;; 
+    ;;
     version)
-      cat << EOF 
+      cat << EOF
 Fiction $FICTION_VERSION
 Copyright (C) Tirito6626, notnulldaemon 2025
 EOF
@@ -1006,18 +1009,18 @@ EOF
       exit 1
     ;;
   esac
-else 
+else
   if [[ "${BASH_SOURCE[-1]}" =~ .shx|.bashx ]]; then
     if ! declare -F bashx >/dev/null 2>&1; then
-        if [ -f "$bashx_path" ]; then 
+        if [ -f "$bashx_path" ]; then
           BASHX_NESTED=true
           source "$bashx_path"
           bashx "${BASH_SOURCE[-1]}"
           exit
-        else 
+        else
           error "cannot load bashx ($bashx_path)"
           exit 1
         fi
-    fi 
+    fi
   fi
 fi
