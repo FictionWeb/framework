@@ -404,86 +404,6 @@ parsePost() {
 }
 
 
-buildResponse() {
-  filename="$serverTmpDir/output_$RANDOM"
-  [ -f "$filename" ] && rm "$filename"
-  FictionRequestHandler >"$filename"
-  [ -z "${FictionResponse["status"]}" ] && httpSendStatus "${statuscode:=200}"
-  printf '%s %s\n' "HTTP/1.1" "${FictionResponse["status"]}"
-  status="${FictionResponss["status"]}"
-  routetype="$type"
-
-  # printf '%s\n' "$(<"$filename")"
-   # cat "$filename" >&2
-  if [[ -z "$filetype" || "$filetype" == "auto" ]]; then
-  local _ char type="$(file --mime "$filename")"
-  IFS=' ' read _ type char <<<"$type"
-  which file 2>&1 >/dev/null && FictionResponseHeaders["content-type"]="${type//;/}"
-  unset _ type char
-  else
-  FictionResponseHeaders["content-type"]="${filetype}"
-  fi
-
-  if [[ "${FictionResponseHeaders["content-type"]}" =~ html && "$routetype" != cgi ]]; then
-  local isdoctype=false ishtml=false isbody=false iscbody=false ishead=false ischtml=false ischead=false
-  local output=$(cat "$filename")
-  if [[ "${output::6}" != '<html>' && "${output::15}" != '<!DOCTYPE html>' ]]; then
-  #local csrf=$(sessionGet "$SESSION_ID")
-  #
-    cat << EOF > "$filename"
-<!DOCTYPE html>
-<html>
-  <head>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <script>
-    let queue = [];
-    let stdoutBuffer = "";
-    let stderrBuffer = "";
-    window.execute = async function execute(command,id) {
-    if (id == undefined) id = null;
-    return new Promise(() => queue.push([command,id]));
-    }
-  </script>
-  $FICTION_HEAD
-  $(
-    "${Fiction[include_dom]:-false}" && echo "<script>$(cat "$dom_path")</script>";
-    if "${Fiction[include_wasm]:-false}"; then
-    if declare -F wasmBundle >/dev/null; then
-      fiction.header.set "Cross-Origin-Opener-Policy" "same-origin"
-      fiction.header.set "Cross-Origin-Embedder-Policy" "require-corp"
-      [[ -v FICTION_ROUTE ]] || FICTION_ROUTE="${FictionRequest[path]}"
-      exportVariable {Fiction[version]} FICTION_ROUTE
-      wasmBundle
-    else
-      error "Cannot load WASM module, file isn't loaded or not found"
-    fi
-    fi;
-    "${Fiction[include_tailwind]:-true}" && echo '<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>';
-    "${Fiction[include_lucide]:=true}" && echo '<script src="https://unpkg.com/lucide@latest"></script>';
-    echo '</head>';
-    [[ "${output::5}" == \<body ]] && echo "$output" || echo "<body>$output</body>";
-    "${Fiction[include_lucide]}" && echo '<script>lucide.createIcons();</script>'
-    )
-</html>
-EOF
-  fi
-  fi
-  read size filename < <(wc -c "$filename")
-  FictionResponseHeaders["content-length"]="${size:=0}"
-  if [[ "$routetype" != "cgi" ]]; then
-  for key in "${!FictionResponseHeaders[@]}"; do
-    printf '%s: %s\n' "${key,,}" "${FictionResponseHeaders[$key]}"
-  done
-  for value in "${FictionResponseCookie[@]}"; do
-    printf 'Set-Cookie: %s\n' "$value"
-  done
-  printf "\n"
-  fi
-  cat "$filename"
-  printf "\n"
-  rm "$filename"
-  unset routetype
-}
 
 
 function FictionRequestHandler() {
@@ -546,13 +466,7 @@ function FictionRequestHandler() {
 function parseAndPrint() {
   time1=$(date +%s%3N)
   FictionRequest[time]="$time1"
-  verbose=true
   local REQUEST_METHOD REQUEST_PATH HTTP_VERSION QUERY_STRING
-  declare -Ag POST
-  declare -Ag GET
-  local -A FictionRequestCookie
-  local -A SESSIONS
-  local -a FictionResponseCookie
 
   read -r REQUEST_METHOD REQUEST_PATH HTTP_VERSION
   HTTP_VERSION="${HTTP_VERSION%%$'\r'}"
@@ -564,13 +478,12 @@ function parseAndPrint() {
   FictionRequest[addr]="$REMOTE_ADDR"
   local line _h
   while read -r line; do
-  line="${line%%$'\r'}"
-  [[ -z "$line" ]] && break
-  _h="${line%%:*}"
-  FictionRequestHeaders["${_h,,}"]="${line#*: }"
+    line="${line%%$'\r'}"
+    [[ -z "$line" ]] && break
+    _h="${line%%:*}"
+    FictionRequestHeaders["${_h,,}"]="${line#*: }"
   done
   unset line _h
-
   local entry
   IFS='?' read -r REQUEST_PATH get <<<"$REQUEST_PATH"
   get="$(urldecode "$get")"
@@ -578,42 +491,116 @@ function parseAndPrint() {
   QUERY_STRING="$get"
   IFS='&' read -ra data <<<"$get"
   for entry in "${data[@]}"; do
-  FictionRequestQuery["${entry%%=*}"]="${entry#*=}"
+    FictionRequestQuery["${entry%%=*}"]="${entry#*=}"
   done
-
   entry=''
-
   local -a cookie
   local key value
   IFS=';' read -ra cookie <<<"${FictionRequestHeaders["cookie"]}"
   [ -n "${FictionRequestHeaders["Cookie"]}" ] && ((${#cookie[@]} < 1 )) && cookie+=( ${FictionRequestHeaders["cookie"]//;} )
   for entry in ${cookie[@]}; do
-  IFS='=' read -r key value <<<"$entry"
-  [[ "$key" ]] && FictionRequestCookie["$key"]="${value}"
+    IFS='=' read -r key value <<<"$entry"
+    [[ "$key" ]] && FictionRequestCookie["$key"]="${value}"
   done
   unset entry cookie key value
 
   if [[ "${FictionRequest[method]}" == "POST" ]] && ((${FictionRequestHeaders['content-length']:=0} > 0)); then
-  local entry
-  if [[ "${FictionRequestHeaders["content-type"]}" == "application/x-www-form-urlencoded" ]]; then
-    IFS='&' read -rN "${FictionRequestHeaders["content-length"]}" -a data
-    for entry in "${data[@]}"; do
-    entry="${entry%%$'\r'}"
-    FictionRequestData["${entry%%=*}"]="${entry#*:}"
-    done
-  elif [[ "${FictionRequestHeaders["content-type"]}" == "application/json" ]]; then
-    read -N "${FictionRequestHeaders["content-length"]}" data
-    eval $(json_to_arr "${data%%$'\r'}" FictionRequestData)
-  else
-    read -rN "${FictionRequestHeaders["content-length"]}" data
-    FictionRequestData["raw"]="${data%%$'\r'}"
+    local entry
+    if [[ "${FictionRequestHeaders["content-type"]}" == "application/x-www-form-urlencoded" ]]; then
+      IFS='&' read -rN "${FictionRequestHeaders["content-length"]}" -a data
+      for entry in "${data[@]}"; do
+        entry="${entry%%$'\r'}"
+        FictionRequestData["${entry%%=*}"]="${entry#*:}"
+      done
+    elif [[ "${FictionRequestHeaders["content-type"]}" == "application/json" ]]; then
+      read -N "${FictionRequestHeaders["content-length"]}" data
+      eval $(json_to_arr "${data%%$'\r'}" FictionRequestData)
+    else
+      read -rN "${FictionRequestHeaders["content-length"]}" data
+      FictionRequestData["raw"]="${data%%$'\r'}"
+    fi
+    unset entry
   fi
-  unset entry
+  filename="$serverTmpDir/output_$RANDOM"
+  [ -f "$filename" ] && rm "$filename"
+  FictionRequestHandler >"$filename"
+  [ -z "${FictionResponse["status"]}" ] && FictionResponse["status"]="${statuscode:=200}"
+  printf '%s %s\n' "HTTP/1.1" "${FictionResponse["status"]}"
+  status="${FictionResponss["status"]}"
+  routetype="$type"
+
+  # printf '%s\n' "$(<"$filename")"
+   # cat "$filename" >&2
+  if [[ -z "$filetype" || "$filetype" == "auto" ]]; then
+    local _ char type="$(file --mime "$filename")"
+    IFS=' ' read _ type char <<<"$type"
+    which file 2>&1 >/dev/null && FictionResponseHeaders["content-type"]="${type//;/}"
+    unset _ type char
+  else
+    FictionResponseHeaders["content-type"]="${filetype}"
   fi
 
-  buildResponse
-  "${verbose:=false}" && echo "[$(date)] ${Fiction[expose_addr]:+$REMOTE_ADDR} ${FictionRequest[method]} ${FictionRequest[path]} ${FictionResponse[status]} $(($(date +%s%3N)-time1))ms" >&2
-  unset HTTP_VERSION REQUEST_METHOD FictionRequest[path] status
+  if [[ "${FictionResponseHeaders["content-type"]}" =~ html && "$routetype" != cgi ]]; then
+    local isdoctype=false ishtml=false isbody=false iscbody=false ishead=false ischtml=false ischead=false
+    local output=$(<"$filename")
+    if [[ "${output::6}" != '<html>' && "${output::15}" != '<!DOCTYPE html>' ]]; then
+  #local csrf=$(sessionGet "$SESSION_ID")
+    (
+      cat << EOF 
+<!DOCTYPE html>
+<html>
+  <head>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  ${FictionResponse[head]}$FICTION_META
+EOF
+    "${Fiction[include_dom]:-false}" && echo "<script>$(<"$dom_path")</script>";
+    if "${Fiction[include_wasm]:-false}"; then
+      cat << EOF
+        <script>
+    let queue = [];
+    let stdoutBuffer = "";
+    let stderrBuffer = "";
+    window.execute = async function execute(command,id) {
+    if (id == undefined) id = null;
+    return new Promise(() => queue.push([command,id]));
+    }
+  </script>
+EOF
+      if declare -F wasmBundle >/dev/null; then
+        fiction.header.set "Cross-Origin-Opener-Policy" "same-origin"
+        fiction.header.set "Cross-Origin-Embedder-Policy" "require-corp"
+        [[ -v FICTION_ROUTE ]] || FICTION_ROUTE="${FictionRequest[path]}"
+        exportVariable {Fiction[version]} FICTION_ROUTE
+        wasmBundle
+      else
+        error "Cannot load WASM module, file isn't loaded or not found"
+      fi
+    fi;
+    "${Fiction[include_tailwind]:-true}" && echo '<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>';
+    "${Fiction[include_lucide]:=true}" && echo '<script src="https://unpkg.com/lucide@latest"></script>';
+    echo '</head>';
+    [[ "${output::5}" == "<body" ]] && echo "$output" || echo "<body>$output</body>";
+    "${Fiction[include_lucide]}" && echo '<script>lucide.createIcons();</script>'
+    echo "</html>";
+  ) > "$filename";
+  fi
+  fi
+  read size filename < <(wc -c "$filename")
+  FictionResponseHeaders["content-length"]="${size:=0}"
+  if [[ "$routetype" != "cgi" ]]; then
+    for key in "${!FictionResponseHeaders[@]}"; do
+      printf '%s: %s\n' "${key,,}" "${FictionResponseHeaders[$key]}"
+    done
+    for value in "${FictionResponseCookie[@]}"; do
+      printf 'Set-Cookie: %s\n' "$value"
+    done
+    printf "\n"
+  fi
+  cat "$filename"
+  printf "\n"
+  rm "$filename"
+  unset routetype
+  echo "[$(date +"%d/%m/%y %H:%M:%S")] ${Fiction[expose_addr]:+$REMOTE_ADDR} ${FictionRequest[method]} ${FictionRequest[path]} ${FictionResponse[status]} $(($(date +%s%3N)-time1))ms" >&2
   exit
 }
 
@@ -679,7 +666,6 @@ function fiction() {
   local var=$(declare -F | sed -n -e '/fiction/ { /\./ p; }')
   echo "${var//declare -f/ }"
 }
-
 
 
 function fiction.serveDynamic() {
@@ -825,13 +811,17 @@ function fiction.server() {
       fi
     ;;
     nc | netcat | ncat | socat)
-      echo "FICTION_PATH='$FICTION_PATH'" >> "$serverTmpDir/worker.sh";
-      declare -A >> "$serverTmpDir/worker.sh";
-      declare | \
-      grep -vE '(^KDE_*|^GTK*|^XDG*|^XKB*|^PAM*|^KONSOLE*|^SSH_*|^QT_*|^PWD|^OLDPWD|^TERM|^HOME|^USER|^PATH|^BASH_*|^BASHOPTS|^EUID|^PPID|^SHELLOPTS|^UID)' >>"$serverTmpDir/worker.sh"
-      chmod +x "$serverTmpDir/worker.sh";
-      cat >> "$serverTmpDir/job.sh" <<EOF
-#!/bin/bash
+
+      ( 
+        echo "#!/bin/bash"
+        echo "FICTION_PATH='$FICTION_PATH'"
+        declare -A
+        unset -f fiction.server @cache @prerender
+        [[ "${FictionModule[bashx]}" ]] && unset -f @import bashx mktmpDir @render_type @wrapper _render _conditionalRender
+        declare | \
+        grep -vE '(^Fiction*=|^chunk=|^newblock=|^out1=|^GPG|^SHELL|^SESSION_|^OS|^KDE_*|^GTK*|^XDG*|^XKB*|^PAM*|^KONSOLE*|^SSH_*|^QT_*|^PWD|^OLDPWD|^TERM|^HOME|^USER|^PATH|^BASH_*|^BASHOPTS|^EUID|^PPID|^SHELLOPTS|^UID)'
+        cat <<EOF
+
 HEADERS=""
 while read -r val; do
   val="\${val//$'\r'/}"
@@ -842,11 +832,10 @@ done
 [[ "\${value// }" -gt 1 ]] && { read -rn \${value// } -t1 data; [[ \${#data} > 1 ]] && HEADERS+="\${data//$'\r'/}"$'\n'; unset key value data; }
 [[ "\$NCAT_REMOTE_ADDR" ]] && REMOTE_ADDR="\$NCAT_REMOTE_ADDR" || REMOTE_ADDR="\$FICTION_PEERADDR"
 $([[ "$workerargs" ]] && echo 'set $workerargs')
-. $serverTmpDir/worker.sh
 parseAndPrint <<<"\$HEADERS"
 EOF
-
-      chmod +x "$serverTmpDir/job.sh";
+      ) >>"$serverTmpDir/worker.sh";
+      chmod +x "$serverTmpDir/worker.sh";
       trap clean EXIT;
       echo -n "Server address: ";
       case "${Fiction[core]:-socat}" in
@@ -859,24 +848,24 @@ EOF
         else
         [[ "${Fiction[bind_port]}" = 80 ]] && echo -n "http://${Fiction[bind_address]}" || echo -n "http://${Fiction[bind_address]}:${Fiction[bind_port]}";
           echo " (forking mode)";
-          exec -a "fiction" socat TCP-LISTEN:${Fiction[bind_port]},bind="$BIND_ADDRESS",reuseaddr,fork EXEC:''"$serverTmpDir"'/job.sh';
+          exec -a "fiction" socat TCP-LISTEN:${Fiction[bind_port]},bind="$BIND_ADDRESS",reuseaddr,fork EXEC:''"$serverTmpDir"'/worker.sh';
         fi
       ;;
       ncat)
         which ncat >/dev/null || { error "cannot find ncat binary" && return 1; }
         if "${Fiction[https]:=false}"; then
-        [[ "${Fiction[bind_port]}" = 443 ]] && echo -n "https://${Fiction[bind_address]}" || echo -n "https://${Fiction[bind_address]}:${Fiction[bind_port]}";
-        echo " (forking mode)";
-        if [[ "$(exec -a "fiction" ncat -klp "${Fiction[bind_port]}" -c "$serverTmpDir/job.sh" --ssl ${Fiction[ssl_cert]:+--ssl-cert "${Fiction[ssl_cert]}"} ${Fiction[ssl_key]:+--ssl-key "${Fiction[ssl_key]}"} 2>&1)" =~ "Address already in use" ]]; then
-          error "Couldn't bind on port ${Fiction[bind_port]}: Port already in use"
-        fi
+          [[ "${Fiction[bind_port]}" = 443 ]] && echo -n "https://${Fiction[bind_address]}" || echo -n "https://${Fiction[bind_address]}:${Fiction[bind_port]}";
+          echo " (forking mode)";
+          (
+            exec -a "fiction" ncat -klp "${Fiction[bind_port]}" -c "$serverTmpDir/worker.sh" --ssl ${Fiction[ssl_cert]:+--ssl-cert "${Fiction[ssl_cert]}"} ${Fiction[ssl_key]:+--ssl-key "${Fiction[ssl_key]}"}
+          )
         else
-        [[ "${Fiction[bind_port]}" = 80 ]] && echo -n "http://${Fiction[bind_address]}" || echo -n "http://${Fiction[bind_address]}:${Fiction[bind_port]}";
-        echo " (forking mode)";
-        if [[ "$(exec -a "fiction" ncat -klp "${Fiction[bind_port]}" -c "$serverTmpDir/job.sh")" =~ "Address already in use" ]]; then
-          error "Couldn't bind on port ${Fiction[port]}: Port already in use"
-        fi
-        fi
+          [[ "${Fiction[bind_port]}" = 80 ]] && echo -n "http://${Fiction[bind_address]}" || echo -n "http://${Fiction[bind_address]}:${Fiction[bind_port]}";
+          echo " (forking mode)";
+          (
+            exec -a "fiction" ncat -klp "${Fiction[bind_port]}" -c "$serverTmpDir/worker.sh";
+          )
+          fi
       ;;
       nc | netcat)
         which nc >/dev/null || { error "cannot find netcat binary" && return 1; }
@@ -887,7 +876,7 @@ EOF
         echo " (forking mode)";
         nc --version 2> 1 > /dev/null && nc_path="nc.traditional" || nc_path="nc";
         while true; do
-          exec -a "fiction" $nc_path -vklp "${Fiction[bind_port]}" -e "$serverTmpDir/job.sh";
+          exec -a "fiction" $nc_path -vklp "${Fiction[bind_port]}" -e "$serverTmpDir/worker.sh";
           (($? != 0)) && break
         done
         fi
@@ -897,10 +886,13 @@ EOF
   esac
 }
 
-[[ ${Fiction[routes]} != FictionRoute ]] && unset FictionRoute && declare -gn FictionRoute="${Fiction[routes]}"
-[[ ${Fiction[modules]} != FictionModule ]] && unset FictionModule && declare -gn FictionModule="${Fiction[modules]}"
-[[ ${Fiction[response]} != FictionResponse ]] && unset FictionResponse && declare -gn FictionResponse="${Fiction[responses]}"
-[[ ${Fiction[request]} != FictionRequest ]] && unset FictionRequest && declare -gn FictionRequest="${Fiction[requests]}"
+  function declare_objects() {
+    [[ ${Fiction[routes]} != FictionRoute ]] && unset FictionRoute && declare -gn FictionRoute="${Fiction[routes]}"
+    [[ ${Fiction[modules]} != FictionModule ]] && unset FictionModule && declare -gn FictionModule="${Fiction[modules]}"
+    [[ ${Fiction[response]} != FictionResponse ]] && unset FictionResponse && declare -gn FictionResponse="${Fiction[responses]}"
+    [[ ${Fiction[request]} != FictionRequest ]] && unset FictionRequest && declare -gn FictionRequest="${Fiction[requests]}"
+  }
+declare_objects
 for file in $FICTION_PATH/modules/*; do
   case "${file##*/}" in
   accept)

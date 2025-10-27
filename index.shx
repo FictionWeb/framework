@@ -1,17 +1,19 @@
 source fiction.so.sh
-import "./modules/ui/index.sh"
+source modules/bashx/bashx
+#import "./modules/ui/index.sh"
 #import Input from "../ui/src/Input.shx"
 #import Alert from "../ui/src/Alert.shx"
 function test() {
-  echo "<p>$@</p>"
+  echo "<p>$slug</p>"
 }
 function main() {
-  @render_type client
 #  addMeta '<script src=" https://cdn.jsdelivr.net/npm/@wasmer/wasi@1.2.2/dist/Library.esm.min.js "></script>'
-  exportFunction $FICTION_UI_FUNCS
-  setHeader "Cross-Origin-Opener-Policy" "same-origin"
-  setHeader Permissions-Policy "cross-origin-isolated=*"
-  setHeader "Cross-Origin-Embedder-Policy" "require-corp"
+#  wasm.exportFunction $FICTION_UI_FUNCS
+  fiction.header.set "Cross-Origin-Opener-Policy" "same-origin"
+  fiction.header.set Permissions-Policy "cross-origin-isolated=*"
+  fiction.header.set "Cross-Origin-Embedder-Policy" "require-corp"
+  echo "${FictionRequest[@]@A}" >&2 
+  FictionResponse[status]=400
   @return html {
   @render=client
   <head>
@@ -46,9 +48,9 @@ function main() {
   </body>
   }
 }
-FictionServePath "/" "main" "text/html"
-FictionServePackage "/bash.webc"
-
+fiction.serve "/" "main" "text/html"
+#fiction.servePackage "/bash.webc"
+fiction.serveDynamic "/test/[slug]" "test"
 #FictionServeFile "test.html" "/test" "text/html"
 #echo $_preloaded_funcs
-INCLUDE_LUCIDE=false INCLUDE_WASM=true FictionHttpServer "https://0.0.0.0:8080" core="ncat"
+fiction.server "http://0.0.0.0:8080" core="ncat"
