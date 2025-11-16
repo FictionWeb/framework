@@ -5,6 +5,14 @@ FICTION_HTTP_ERROR_END="<hr><p>Fiction Web Server</h1></center></html>"
 FICTION_PATH=$(readlink -f "${BASH_SOURCE[0]:-$0}")
 FICTION_PATH="${FICTION_PATH//fiction.so.sh}"
 FICTION_META=""
+[[ ! -v _red ]] && { 
+_green="$(tput setaf 2)"
+_red="$(tput setaf 1)"
+_yellow="$(tput setaf 3)"
+_white="$(tput setaf 255)"
+_bold="$(tput bold)"
+_nc="$(tput sgr 0)"
+}
 
 # Main configuration object. It contains all options, paths, routes, arguments and modules
 declare -gA Fiction=(
@@ -20,6 +28,7 @@ declare -gA Fiction=(
   [encode_routes]=false # Whether encode routes storage file or not
   [default_index]="index.shx" # Default index file to execute (bashx, fiction run/build)
 )
+#workerargs="-x"
 declare -gA FictionRoute
 declare -gA FictionResponse=(
   [status]=""
@@ -101,7 +110,7 @@ function mktmpDir() {
 }
 
 function error() {
-  [[ ${#FUNCNAME[@]} > 1 ]] && echo -n "(${FUNCNAME[1]}) "
+  [[ ${#FUNCNAME[@]} > 1 ]] && echo -n "(${FUNCNAME[1]}) " >&2
   echo "${_red}Error:${_nc} ${@}" >&2
 }
 
@@ -285,79 +294,8 @@ clean() {
   exit
 }
 
-function fiction.addMeta() {
-  FictionResponse[head]+="$@"$'\n'
-}
-
-function fiction.header.set() {
-  [[ -z "$1" || -z "$2" ]] && return
-  FictionResponseHeaders["$1"]="$2"
-}
 
 
-function fiction.addServerAction() {
-  [ -z "$1" ] && return
-  local path="/__server-action_$(echo "$1" | sha256sum)"
-  local path2="$(sha256sum <<< "${path::-3}")"
-  [[ ! "$(__d "$serverTmpDir/.routes")" =~ ${path2::-3} ]] && fiction.serve "${path::-3}" "$1" "" api >&2
-  [[ $? == 0 ]] && printf "%s" "serverAction('${path::-3}')" || return
-  unset path json
-}
-
-function fiction.session() {
-  [ ! -f "$serverTmpDir/.sessions" ] && { echo ""; return; }
-  local s c s1 c1 m=false
-  s1=$(echo "$1" | sha256sum)
-  ou=$(__d "$serverTmpDir/.sessions" | grep "${s1::-3}")
-  [ -n "$ou" ] && IFS=' ' read s c <<< "$ou" || { echo ""; return; }
-  [[ "${s1::-3}" == "$s" ]] || { echo ""; return; }
-  c1=$(base64 -d <<< "$c")
-}
-
-function fiction.response.cookie.set() {
-  FictionResponseCookie+=("$1")
-}
-
-function fiction.session.set() {
-  if [ ! -f "$serverTmpDir/.sessions" ]; then
-  : >"$serverTmpDir/.sessions"
-  local session="$(generate_session_id)"
-  local ssession=$(echo "$session" | sha256sum)
-  local tok="$(generate_csrf_token | base64 -w 0)"
-  __e "${ssession::-3} $tok" "$serverTmpDir/.sessions"
-  fiction.cookie.set "session_id=${session}; HttpOnly; max-age=${1:-10000}"
-  SESSION_ID="${session}"
-  unset session tok
-  else
-  local ou="$(__d "$serverTmpDir/.sessions")"
-  local session="$(generate_session_id)"
-  local ssession=$(echo "$session" | sha256sum)
-  local tok="$(generate_csrf_token | base64 -w 0)"
-   ou+=$'\n'"${ssession::-3} $tok"
-  __e "$ou" "$serverTmpDir/.sessions"
-  fiction.cookie.set "session_id=${session}; HttpOnly; max-age=${1:-10000}"
-  unset ou session tok
-  fi
-}
-
-
-
-function fiction.request.getQuery() {
-  [ -z "$1" ] && return
-  IFS="=" read -r _ val <<<"${GET["$1"]}"
-  echo "$val"
-}
-
-function fiction.request.getSlug() {
-  [ -z "$1" ] && return 1
-  local var="FICTION_SLUG_$1"
-  echo "${!var}"
-  unset var
-}
-
-function fiction.getRoute() {
-  echo "$FICTION_ROUTE"
-}
 
 function generate_csrf_token() {
   openssl rand -base64 48
@@ -375,13 +313,7 @@ rename_fn() {
   unset -f "$1";
 }
 
-fiction.respond() {
-  local output;
-  [[ -z "$1" ]] && error "At least one argument expected" >&2 && return 1
-  FictionResponse["status"]="$1"
-  [[ -z "$2" ]] && while read chunk; do output+="$chunk"$'\n'; done || local output="$2"
-  echo "$output"
-}
+
 
 parsePost() {
   if [[ "${FictionRequest[method]}" =~ "POST"|"PATCH"|"PUT" ]] && ((${FictionRequestHeaders['content-length']:=0} > 0)); then
@@ -407,7 +339,7 @@ parsePost() {
 
 
 function FictionRequestHandler() {
-  [[ "${FictionRequest[path]}" =~ ".."|"~" ]] && show_404
+  [[ "${FictionRequest[path]}" =~ ".."|"~" ]] && fiction.404
   [ "${FictionRequest[path]::2}" == "//" ] && FictionRequest[path]="${FictionRequest[path]:1}";
   [ "${FictionRequest[path]::1}" != "/" ] && FictionRequest[path]="/${FictionRequest[path]}";
   [[ "${FictionRequest[method]}" == 'POST' && -n "${FictionRequestHeaders['fiction-action']}" ]] && FictionRequest[path]="/${FictionRequestHeaders['fiction-action']}";
@@ -431,7 +363,7 @@ function FictionRequestHandler() {
         FictionRequest[path]="${FictionRequest[path]}" \
         CONTENT_LENGTH="${FictionRequestHeaders['content-length']}" \
         SCRIPT_NAME="$func" \
-        Fiction[https]="$Fiction[https]" \
+        HTTPS="${Fiction[https]}" \
         SCRIPT_FILENAME="$(basename -f "$func")" \
         HTTP_USER_AGENT="${FictionRequestHeaders['user-agent']}" \
         HTTP_FictionRequestCookie="${FictionRequestHeaders['cookie']}" \
@@ -452,14 +384,15 @@ function FictionRequestHandler() {
           slugs="${slugs% }" 
           read _ $slugs <<< "${BASH_REMATCH[@]}"
           $func
+          return
         done <<< "$ou2"
+        fiction.404
       else
-        show_404;
+        fiction.404;
       fi
     fi
   else
-    httpSendStatus 404;
-    sendError "404 Page Not Found";
+    fiction.404;
   fi
 }
 
@@ -467,7 +400,6 @@ function parseAndPrint() {
   time1=$(date +%s%3N)
   FictionRequest[time]="$time1"
   local REQUEST_METHOD REQUEST_PATH HTTP_VERSION QUERY_STRING
-
   read -r REQUEST_METHOD REQUEST_PATH HTTP_VERSION
   HTTP_VERSION="${HTTP_VERSION%%$'\r'}"
   [[ "$HTTP_VERSION" =~ HTTP/[0-9]\.?[0-9]? ]] && HTTP_VERSION="${BASH_REMATCH[0]}"
@@ -526,8 +458,7 @@ function parseAndPrint() {
   FictionRequestHandler >"$filename"
   [ -z "${FictionResponse["status"]}" ] && FictionResponse["status"]="${statuscode:=200}"
   printf '%s %s\n' "HTTP/1.1" "${FictionResponse["status"]}"
-  status="${FictionResponss["status"]}"
-  routetype="$type"
+  local routetype="$type"
 
   # printf '%s\n' "$(<"$filename")"
    # cat "$filename" >&2
@@ -570,7 +501,8 @@ EOF
         fiction.header.set "Cross-Origin-Opener-Policy" "same-origin"
         fiction.header.set "Cross-Origin-Embedder-Policy" "require-corp"
         [[ -v FICTION_ROUTE ]] || FICTION_ROUTE="${FictionRequest[path]}"
-        exportVariable {Fiction[version]} FICTION_ROUTE
+        [[ -v FICTION_VERSION ]] || FICTION_VERSION="${Fiction[version]}"
+        exportVariable FICTION_VERSION FICTION_ROUTE
         wasmBundle
       else
         error "Cannot load WASM module, file isn't loaded or not found"
@@ -600,11 +532,99 @@ EOF
   printf "\n"
   rm "$filename"
   unset routetype
-  echo "[$(date +"%d/%m/%y %H:%M:%S")] ${Fiction[expose_addr]:+$REMOTE_ADDR} ${FictionRequest[method]} ${FictionRequest[path]} ${FictionResponse[status]} $(($(date +%s%3N)-time1))ms" >&2
+  case "${FictionResponse[status]}" in
+    2[0-9][0-9]) local status="${_green}${FictionResponse[status]}${_nc}" ;;
+    3[0-9][0-9]) local status="${_yellow}${FictionResponse[status]}${_nc}" ;;
+    4[0-9][0-9]|5[0-9][0-9]) local status="${_red}${FictionResponse[status]}${_nc}" ;;
+    *) status="${FictionResponse[status]}"
+  esac
+  echo "[$(date +"%d/%m/%y %H:%M:%S")] ${Fiction[expose_addr]:+$REMOTE_ADDR} ${FictionRequest[method]} ${FictionRequest[path]} $status $(($(date +%s%3N)-time1))ms" >&2
+  unset status
   exit
 }
 
 # HelperFns
+
+function fiction.addServerAction() {
+  [ -z "$1" ] && return
+  local path="/__server-action_$(echo "$1" | sha256sum)"
+  local path2="$(sha256sum <<< "${path::-3}")"
+  [[ ! "$(__d "$serverTmpDir/.routes")" =~ ${path2::-3} ]] && fiction.serve "${path::-3}" "$1" "" api >&2
+  [[ $? == 0 ]] && printf "%s" "serverAction('${path::-3}')" || return
+  unset path json
+}
+
+
+function fiction.addMeta() {
+  FictionResponse[head]+="$@"$'\n'
+}
+
+function fiction.header.set() {
+  [[ -z "$1" || -z "$2" ]] && return
+  FictionResponseHeaders["$1"]="$2"
+}
+
+function fiction.session() {
+  [ ! -f "$serverTmpDir/.sessions" ] && { echo ""; return; }
+  local s c s1 c1 m=false
+  s1=$(echo "$1" | sha256sum)
+  ou=$(__d "$serverTmpDir/.sessions" | grep "${s1::-3}")
+  [ -n "$ou" ] && IFS=' ' read s c <<< "$ou" || { echo ""; return; }
+  [[ "${s1::-3}" == "$s" ]] || { echo ""; return; }
+  c1=$(base64 -d <<< "$c")
+}
+
+function fiction.response.cookie.set() {
+  FictionResponseCookie+=("$1")
+}
+
+function fiction.session.set() {
+  if [ ! -f "$serverTmpDir/.sessions" ]; then
+  : >"$serverTmpDir/.sessions"
+  local session="$(generate_session_id)"
+  local ssession=$(echo "$session" | sha256sum)
+  local tok="$(generate_csrf_token | base64 -w 0)"
+  __e "${ssession::-3} $tok" "$serverTmpDir/.sessions"
+  fiction.cookie.set "session_id=${session}; HttpOnly; max-age=${1:-10000}"
+  SESSION_ID="${session}"
+  unset session tok
+  else
+  local ou="$(__d "$serverTmpDir/.sessions")"
+  local session="$(generate_session_id)"
+  local ssession=$(echo "$session" | sha256sum)
+  local tok="$(generate_csrf_token | base64 -w 0)"
+   ou+=$'\n'"${ssession::-3} $tok"
+  __e "$ou" "$serverTmpDir/.sessions"
+  fiction.cookie.set "session_id=${session}; HttpOnly; max-age=${1:-10000}"
+  unset ou session tok
+  fi
+}
+
+
+
+function fiction.request.getQuery() {
+  [ -z "$1" ] && return
+  IFS="=" read -r _ val <<<"${GET["$1"]}"
+  echo "$val"
+}
+
+function fiction.request.getSlug() {
+  [ -z "$1" ] && return 1
+  echo "${!1}"
+}
+
+function fiction.getRoute() {
+  echo "${Fiction[route]}"
+}
+
+fiction.respond() {
+  local output;
+  [[ -z "$1" ]] && error "At least one argument expected" >&2 && return 1
+  FictionResponse["status"]="$1"
+  [[ -z "$2" ]] && while read chunk; do output+="$chunk"$'\n'; done || local output="$2"
+  echo "$output"
+}
+
 function fiction.serve() {
   # fiction.serve <from> <to:fn> <as> <type?> <headers?>
   [[ -z "$1" || -z "$2" ]] && return 1
@@ -640,11 +660,47 @@ function fiction.serve() {
   echo "[${_white}+${_nc}] Added ${type} route: from ${_bold}'$1'${_nc} to ${_bold}'$2'${_nc} ${3:+as '$3'}"
 }
 
-show_404() {
-  INCLUDE_DOM=false
-  Fiction[include_lucide]=false
-  httpSendStatus 404
-  sendError "404 Page Not Found"
+fiction.404() {
+#  INCLUDE_DOM=false
+#  Fiction[include_lucide]=false
+  fiction.header.set "server" "Fiction/${Fiction[version]}"
+  fiction.respond 404 <<- EOF
+  <!DOCTYPE html>
+  <html style='font-family:sans-serif;background-color:black;color:white;'>
+    <meta>
+      <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+      <title>Not found - Fiction</title>
+    </meta>
+    <body class="w-full h-full">
+      <div class="mx-auto mt-24 text-center">
+        <h1 class="text-7xl font-bold">404</h1>
+        The route is... fictional?
+      </div>
+      <div>
+    </body>
+  </html>
+EOF
+  return
+}
+
+fiction.500() {
+  fiction.header.set "server" "Fiction/${Fiction[version]}"
+  fiction.respond 500 <<- EOF
+  <!DOCTYPE html>
+  <html style='font-family:sans-serif;background-color:black;color:white;'>
+    <meta>
+      <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+      <title>Server Error - Fiction</title>
+    </meta>
+    <body class="w-full h-full">
+      <div class="mx-auto mt-24 text-center">
+        <h1 class="text-7xl font-bold">500</h1>
+        You got us! We couldn't process your request properly
+      </div>
+      <div>
+    </body>
+  </html>
+EOF
   return
 }
 
@@ -678,7 +734,12 @@ function fiction.serveCGI() {
   fiction.serve "${2:-/${1//.\/}}" "$1" "$3" cgi
 }
 
-
+function fiction.redirect() {
+  [[ -z "$1" ]] && error "Expected \$1, but got null" && fiction.500 && return
+  fiction.header.set "server" "Fiction/${Fiction[version]}"
+  fiction.header.set "location" "$1"
+  fiction.respond 301
+}
 
 function fiction.serveFile() {
   [ ! -f "$1" ] && error "$1 is not a file" && return 1
@@ -737,6 +798,10 @@ function fiction.serveDir() {
 
 
 function fiction.server() {
+  if [[ -z "${FictionRoute['/favicon.svg']}" ]]; then 
+    declare -A _hh=([cache-control]="public,max-age=86400" [age]=0)
+    fiction.serveFile "${FICTION_PATH}favicon.svg" "/favicon.ico" "" "_hh" >/dev/null
+  fi
   [[ "$FICTION_BUILD" ]] && return
   local origaddress="$1";
   [[ $origaddress ]] || error "Bind address required"
@@ -744,69 +809,63 @@ function fiction.server() {
     Fiction[https]=true;
     origaddress="${origaddress//https:\/\//}";
   else
-    if [[ "$origaddress" =~ "http://" ]]; then
-      origaddress="${origaddress//http:\/\//}";
-    fi
+    [[ "$origaddress" =~ "http://" ]] && origaddress="${origaddress//http:\/\//}";
   fi
   IFS=':' read -r address port <<< "$origaddress";
-  [ -z "$port" ] && {
-    "${Fiction[https]:=false}" && port=443 || port=80
-  };
+  [[ -z "$port" ]] && { "${Fiction[https]:=false}" && port=443 || port=80; }
   Fiction[bind_address]="$address"
   Fiction[bind_port]="$port"
   unset address port
   shift;
   if [[ "$#" > 0 ]]; then
     for arg in "${@}"; do
-    IFS='=' read key value <<< "$arg";
-    [[ -z "$value" ]] && continue;
-    case "$key" in
-      ssl)
-      Fiction[https]=true
-      ;;
-      ssl_cert)
-      [ -f "$value" ] && Fiction[ssl_cert]="$value" || {
-        error "ssl_cert: $value: no such file" && return 1
-      }
-      ;;
-      ssl_key)
-      [ -f "$value" ] && Fiction[ssl_key]="$value" || {
-        error "ssl_key: $value: no such file" && return 1
-      }
-      ;;
-      include_lucide) Fiction[include_lucide]="$value" ;;
-      include_tailwind) Fiction[include_tailwind]="$value" ;;
-      include_wasm) Fiction[include_wasm]="$value" ;;
-      expose_addr) Fiction[expose_addr]="$value" ;;
-      core) Fiction[core]="$value" ;;
-      *)
-      error "Illegal option: $key" 1>&2;
-      return 1
-      ;;
-    esac
+      IFS='=' read key value <<< "$arg";
+      [[ -z "$value" ]] && continue;
+      case "$key" in
+        ssl)  Fiction[https]=true ;;
+        ssl_cert) 
+          [ -f "$value" ] && Fiction[ssl_cert]="$value" || {
+            error "ssl_cert: $value: no such file" && return 1
+          }
+        ;;
+        ssl_key)
+          [ -f "$value" ] && Fiction[ssl_key]="$value" || {
+            error "ssl_key: $value: no such file" && return 1
+          }
+        ;;
+        include_lucide) Fiction[include_lucide]="$value" ;;
+        include_tailwind) Fiction[include_tailwind]="$value" ;;
+        include_wasm) Fiction[include_wasm]="$value" ;;
+        expose_addr) Fiction[expose_addr]="$value" ;;
+        core) Fiction[core]="$value" ;;
+        *)
+          error "Illegal option: $key" 1>&2;
+          return 1
+        ;;
+      esac
     done
     unset key value
   fi
   echo -e "\nStarting Fiction (${_green}${Fiction[version]}${_nc})"
-  [[ "${Fiction[include_wasm]}" == true && "${Fiction[https]:=false}" == false ]] && error "Running the website with WASM included on HTTP. Modern browsers will not allow WASM initialization from HTTP origin. In case it's a development server, consider using ncat for a temporary Fiction[https] server." && return 1
+  [[ "${Fiction[include_wasm]}" == true && "${Fiction[https]:=false}" == false ]] && error "Running the website with WASM included on HTTP. Modern browsers will not allow WASM initialization from HTTP origin. In case it's a development server, consider using ncat for running a temporary HTTPS server." && return 1
   mktmpDir
   case "${Fiction[core]}" in
     bash)
       if "${Fiction[https]:=false}"; then
-      echo "Fiction[https] is not supported in bash mode" 1>&2;
+      echo "HTTPS isn't available in development core. Use ncat or socat for HTTPS server" 1>&2;
       exit 1;
       else
       [ ! -f "${FictionModule[accept]}" ] && error "\`accept\` is not found in ${Fiction[path]}" && return 1;
       enable -f "${FictionModule[accept]}" accept;
       [[ "${Fiction[bind_port]}" = 80 ]] && echo -e "\nServer address: http://${Fiction[bind_address]} (single connection mode)" || echo -e "\nServer address: http://${Fiction[bind_address]}:${Fiction[bind_port]} (single connection mode)";
       while true; do
-        accept -b "${Fiction[bind_address]}" -r REMOTE_ADDR "${Fiction[bind_port]}";
-        if [[ $? = 0 && -n "$ACCEPT_FD" ]]; then
-          parseAndPrint <&${ACCEPT_FD} >&${ACCEPT_FD};
-          exec {ACCEPT_FD}>&-;
-        else
-          return 1;
-        fi
+        (
+          accept -b "${Fiction[bind_address]}" -r REMOTE_ADDR "${Fiction[bind_port]}";
+          if [[ -n "$ACCEPT_FD" ]]; then
+            parseAndPrint <&${ACCEPT_FD} >&${ACCEPT_FD};
+            exec {ACCEPT_FD}>&-;
+          fi
+        );
       done
       fi
     ;;
@@ -842,11 +901,11 @@ EOF
       socat)
         which socat >/dev/null || { error "cannot find socat binary" && return 1; }
         if "${Fiction[https]:=false}"; then
-        [[ "${Fiction[bind_port]}" = 443 ]] && echo -n "https://${Fiction[bind_address]}" || echo -n "https://${Fiction[bind_address]}:${Fiction[bind_port]}";
-        echo " (forking mode)";
-        exec -a "fiction" socat openssl-listen:"${Fiction[bind_port]}",bind="$BIND_ADDRESS",verify=0,${Fiction[ssl_cert]:+cert="${Fiction[ssl_cert]}",}${Fiction[ssl_key]:+key="${Fiction[ssl_key]}",}reuseaddr,fork SYSTEM:"$serverTmpDir/job.sh";
+          [[ "${Fiction[bind_port]}" = 443 ]] && echo -n "https://${Fiction[bind_address]}" || echo -n "https://${Fiction[bind_address]}:${Fiction[bind_port]}";
+          echo " (forking mode)";
+          exec -a "fiction" socat openssl-listen:"${Fiction[bind_port]}",bind="$BIND_ADDRESS",verify=0,${Fiction[ssl_cert]:+cert="${Fiction[ssl_cert]}",}${Fiction[ssl_key]:+key="${Fiction[ssl_key]}",}reuseaddr,fork SYSTEM:"$serverTmpDir/job.sh";
         else
-        [[ "${Fiction[bind_port]}" = 80 ]] && echo -n "http://${Fiction[bind_address]}" || echo -n "http://${Fiction[bind_address]}:${Fiction[bind_port]}";
+          [[ "${Fiction[bind_port]}" = 80 ]] && echo -n "http://${Fiction[bind_address]}" || echo -n "http://${Fiction[bind_address]}:${Fiction[bind_port]}";
           echo " (forking mode)";
           exec -a "fiction" socat TCP-LISTEN:${Fiction[bind_port]},bind="$BIND_ADDRESS",reuseaddr,fork EXEC:''"$serverTmpDir"'/worker.sh';
         fi
@@ -856,29 +915,27 @@ EOF
         if "${Fiction[https]:=false}"; then
           [[ "${Fiction[bind_port]}" = 443 ]] && echo -n "https://${Fiction[bind_address]}" || echo -n "https://${Fiction[bind_address]}:${Fiction[bind_port]}";
           echo " (forking mode)";
-          (
-            exec -a "fiction" ncat -klp "${Fiction[bind_port]}" -c "$serverTmpDir/worker.sh" --ssl ${Fiction[ssl_cert]:+--ssl-cert "${Fiction[ssl_cert]}"} ${Fiction[ssl_key]:+--ssl-key "${Fiction[ssl_key]}"}
-          )
+          ( exec -a "fiction" ncat -klp "${Fiction[bind_port]}" -c "$serverTmpDir/worker.sh" --ssl ${Fiction[ssl_cert]:+--ssl-cert "${Fiction[ssl_cert]}"} ${Fiction[ssl_key]:+--ssl-key "${Fiction[ssl_key]}"}; )
         else
           [[ "${Fiction[bind_port]}" = 80 ]] && echo -n "http://${Fiction[bind_address]}" || echo -n "http://${Fiction[bind_address]}:${Fiction[bind_port]}";
           echo " (forking mode)";
-          (
-            exec -a "fiction" ncat -klp "${Fiction[bind_port]}" -c "$serverTmpDir/worker.sh";
-          )
+          ( exec -a "fiction" ncat -klp "${Fiction[bind_port]}" -c "$serverTmpDir/worker.sh"; )
           fi
       ;;
       nc | netcat)
-        which nc >/dev/null || { error "cannot find netcat binary" && return 1; }
-        if "${Fiction[https]:=false}"; then
-        error "Fiction[https] is not supported in legacy netcat mode" 1>&2
-        else
-        [[ "${Fiction[bind_port]}" = 80 ]] && echo -n "http://${Fiction[bind_address]}" || echo -n "http://${Fiction[bind_address]}:${Fiction[bind_port]}";
-        echo " (forking mode)";
         nc --version 2> 1 > /dev/null && nc_path="nc.traditional" || nc_path="nc";
-        while true; do
-          exec -a "fiction" $nc_path -vklp "${Fiction[bind_port]}" -e "$serverTmpDir/worker.sh";
-          (($? != 0)) && break
-        done
+        which "$nc_path" >/dev/null || { error "cannot find netcat binary" && return 1; }
+        if "${Fiction[https]:=false}"; then
+          error "Fiction[https] is not supported in legacy netcat mode" 1>&2
+        else
+          [[ "${Fiction[bind_port]}" = 80 ]] && echo -n "http://${Fiction[bind_address]}" || echo -n "http://${Fiction[bind_address]}:${Fiction[bind_port]}";
+          echo " (forking mode)";
+          while true; do
+            (
+              exec -a "fiction" $nc_path -vklp "${Fiction[bind_port]}" -e "$serverTmpDir/worker.sh";
+              (($? != 0)) && break
+            )
+          done
         fi
       ;;
       esac
@@ -886,11 +943,11 @@ EOF
   esac
 }
 
-  function declare_objects() {
-    [[ ${Fiction[routes]} != FictionRoute ]] && unset FictionRoute && declare -gn FictionRoute="${Fiction[routes]}"
-    [[ ${Fiction[modules]} != FictionModule ]] && unset FictionModule && declare -gn FictionModule="${Fiction[modules]}"
-    [[ ${Fiction[response]} != FictionResponse ]] && unset FictionResponse && declare -gn FictionResponse="${Fiction[responses]}"
-    [[ ${Fiction[request]} != FictionRequest ]] && unset FictionRequest && declare -gn FictionRequest="${Fiction[requests]}"
+function declare_objects() {
+  [[ ${Fiction[routes]} != FictionRoute ]] && unset FictionRoute && declare -gn FictionRoute="${Fiction[routes]}"
+  [[ ${Fiction[modules]} != FictionModule ]] && unset FictionModule && declare -gn FictionModule="${Fiction[modules]}"
+  [[ ${Fiction[response]} != FictionResponse ]] && unset FictionResponse && declare -gn FictionResponse="${Fiction[responses]}"
+  [[ ${Fiction[request]} != FictionRequest ]] && unset FictionRequest && declare -gn FictionRequest="${Fiction[requests]}"
   }
 declare_objects
 for file in $FICTION_PATH/modules/*; do
@@ -898,6 +955,13 @@ for file in $FICTION_PATH/modules/*; do
   accept)
     [[ -v __modules[accept] ]] && continue
     FictionModule[accept]="$file"
+  ;;
+  ui)
+    [[ -v __modules[ui] ]] && continue
+    if [[ -f "$file/index.sh" ]]; then
+      FictionModule[ui]="$file"
+      source "$file/index.sh"
+    fi
   ;;
   bashx)
     [[ -v FictionModule[bashx] ]] && continue
@@ -934,7 +998,7 @@ if ! (return 0 2>/dev/null); then
     fi
     [[ "$2" ]] && Fiction[default_index]="$2"
     BASHX_VERBOSE=true
-    bashx "$Fiction[default_index]"
+    bashx "${Fiction[default_index]}"
   ;;
   build)
     echo "Initializing build..."
@@ -982,7 +1046,7 @@ EOF
 Usage: $0 [action] [arguments]
 
 Available actions:
-  run   [file?]         Start the server using <file> with preloaded Fiction (index.shx default)
+  run   [file?]            Start the server using <file> with preloaded Fiction (index.shx default)
   build [file?] [target?]  Build the routes defined into <file> into <target> directory (fiction_compiled default)
 EOF
     exit 1
