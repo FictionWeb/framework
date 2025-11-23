@@ -938,11 +938,15 @@ _hotreload() {
   FICTION_HOTRELOAD=true
   warn "Hot-Reload enabled. This is an experimental feature, use it with caution."
   if which inotifywait >/dev/null 2>&1; then
-    inotifywait -qqm --event modify --format '%w' $FICTION_PATH/src/* ${FICTION_PATH}fiction.so.sh | while read -r file; do
-      [[ ! "$file" =~ \.shx|\.bashx ]] && { source "$file" && printf "%s\n" "[$_green✓$_nc] Reloaded $file" || printf "%s\n" "[${_red}x${_nc}] Failed to reload $file"; } || @import "$file"; 
+    i=0
+    inotifywait -qm --event modify --format '%w' $FICTION_PATH/src/* ${FICTION_PATH}fiction.so.sh | while read -r file; do
+      ((i == 1)) && i=0 && continue  
+      [[ ! "$file" =~ \.shx|\.bashx ]] && { source "$file" && printf "%s\n" "[$_green✓$_nc] Reloaded $file" || printf "%s\n" "[${_red}x${_nc}] Failed to reload $file"; } || BASHX_VERBOSE=true @import "$file"; 
       _buildWorker
+      i=1
     done
   else
+    warn "inotify-tools package is not installed, Hot-Reload will use md5sum to compare files every 2s"
     declare -A _files=()
     for file in ${FICTION_PATH}fiction.so.sh $FICTION_PATH/src/*; do
       _files["$file"]="$(md5sum "$file")";
@@ -952,7 +956,7 @@ _hotreload() {
         file2=$(md5sum "$file")
         [[ "$file2" == "${_files["$file"]}" ]] && continue
         printf "%s\n" "(hot-reload) Reloading $file..."
-        [[ ! "$file" =~ \.shx|\.bashx ]] && { source "$file" && printf "%s\n" "[$_green✓$_nc] Reloaded $file" || printf "%s\n" "[${_red}x${_nc}] Failed to reload $file"; } || @import "$file"; 
+        [[ ! "$file" =~ \.shx|\.bashx ]] && { source "$file" && printf "%s\n" "[$_green✓$_nc] Reloaded $file" || printf "%s\n" "[${_red}x${_nc}] Failed to reload $file"; } || BASHX_VERBOSE=true @import "$file"; 
         _buildWorker
         _files["$file"]="$file2";
       done
