@@ -3,3 +3,4 @@ server.crt
 server.key
 .fiction
 modules
+fiction_compiled
