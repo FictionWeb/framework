@@ -254,12 +254,7 @@ __d() {
 }
 
 
-clean() {
-  echo -e "\nStopping the server..."
-  [[ -n "$serverTmpDir" && -d "$serverTmpDir" ]] && rm -rf "$serverTmpDir"
-  [[ "$SERVER_PID" ]] && kill "$SERVER_PID" 2>/dev/null
-  exit
-}
+
 
 
 
@@ -510,7 +505,7 @@ EOF
   elif ((time < 500)); then 
     time="${_yellow}${time}${_nc}ms"
   else
-    ((time > 1000)) && time="${_red}${time}${_nc}s" || time="${_red}${time}${_nc}ms"
+    ((time > 1000)) && printf -v time "${_red}%.2f${_nc}s" "${time}e-3" || time="${_red}${time}${_nc}ms"
   fi
   if ((size > 1048576)); then
     builtin printf -v size "%.2f MB" "$((size/1024))e-3"
@@ -853,6 +848,7 @@ function fiction.server() {
   done
   [[ "${Fiction[include_wasm]}" == true && "${Fiction[https]:=false}" == false ]] && error "Running the website with WASM included on HTTP. Modern browsers will not allow WASM initialization from HTTP origin. In case it's a development server, consider using ncat for running a temporary HTTPS server." && return 1
   mktmpDir
+  trap clean EXIT;
   case "${Fiction[core]}" in
     bash)
       if "${Fiction[https]:=false}"; then
@@ -861,55 +857,60 @@ function fiction.server() {
       else
         [ ! -f "${FictionModule[accept]}" ] && error "\`accept\` is not found in ${Fiction[path]}" && return 1;
         enable -f "${FictionModule[accept]}" accept;
-        [[ "${Fiction[bind_port]}" = 80 ]] && echo -e "\nServer address: http://${Fiction[bind_address]} (${Fiction[mode]} mode)" || echo -e "\nServer address: http://${Fiction[bind_address]}:${Fiction[bind_port]} (${Fiction[mode]} mode)";
-        while true; do
-          (
-          accept -b "${Fiction[bind_address]}" -r REMOTE_ADDR "${Fiction[bind_port]}";
+        [[ "${Fiction[bind_port]}" = 80 ]] && \
+        echo -e "\nServer address: http://${Fiction[bind_address]} (${Fiction[mode]} mode)" || \
+        echo -e "\nServer address: http://${Fiction[bind_address]}:${Fiction[bind_port]} (${Fiction[mode]} mode)";
+        (
+          while true; do
+            accept -b "${Fiction[bind_address]}" -r REMOTE_ADDR "${Fiction[bind_port]}";
             if [[ -n "$ACCEPT_FD" ]]; then
               parseAndPrint <&${ACCEPT_FD} >&${ACCEPT_FD};
               exec {ACCEPT_FD}>&-;
             fi
-          );
+          done
+        ) &
+        SERVER_PID=$!
+        [[ ${Fiction[mode]} =~ dev || ${Fiction[hot_reload]} = true ]] && _hotreload &
+        while read line; do
+          case "$line" in
+            exit|quit|q) exit ;; 
+          esac
         done
       fi
     ;;
     nc | netcat | ncat | socat)
       _buildWorker
-      trap clean EXIT;
       echo -n "Server address: ";
+      if "${Fiction[https]:=false}"; then
+        [[ "${Fiction[bind_port]}" = 443 ]] && \
+          echo -n "https://${Fiction[bind_address]}" || \
+          echo -n "https://${Fiction[bind_address]}:${Fiction[bind_port]}";
+      else
+        [[ "${Fiction[bind_port]}" = 80 ]] && \
+          echo -n "http://${Fiction[bind_address]}" || \
+          echo -n "http://${Fiction[bind_address]}:${Fiction[bind_port]}";
+      fi
+      echo " (${Fiction[mode]} mode)";
       case "${Fiction[core]:-socat}" in
       socat)
         which socat >/dev/null || { error "cannot find socat binary" && return 1; }
         if "${Fiction[https]:=false}"; then
-          [[ "${Fiction[bind_port]}" = 443 ]] && echo -n "https://${Fiction[bind_address]}" || echo -n "https://${Fiction[bind_address]}:${Fiction[bind_port]}";
-          echo " (${Fiction[mode]} mode)";
           ( 
             exec -a "fiction" socat openssl-listen:"${Fiction[bind_port]}",bind="${Fiction[bind_address]}",verify=0,${Fiction[ssl_cert]:+cert="${Fiction[ssl_cert]}",}${Fiction[ssl_key]:+key="${Fiction[ssl_key]}",}reuseaddr,fork SYSTEM:"$serverTmpDir/job.sh";
           ) &
-          SERVER_PID=$!
-          [[ ${Fiction[mode]} =~ dev || ${Fiction[hot_reload]} = true ]] && _hotreload
         else
-          [[ "${Fiction[bind_port]}" = 80 ]] && echo -n "http://${Fiction[bind_address]}" || echo -n "http://${Fiction[bind_address]}:${Fiction[bind_port]}";
           echo " (${Fiction[mode]} mode)";
           ( exec -a "fiction" socat TCP-LISTEN:${Fiction[bind_port]},bind="${Fiction[bind_address]}",reuseaddr,fork EXEC:''"$serverTmpDir"'/worker.sh'; ) &
-          SERVER_PID=$!
-          [[ ${Fiction[mode]} =~ dev || ${Fiction[hot_reload]} = true ]] && _hotreload
         fi
       ;;
       ncat)
         which ncat >/dev/null || { error "cannot find ncat binary" && return 1; }
         if "${Fiction[https]:=false}"; then
-          [[ "${Fiction[bind_port]}" = 443 ]] && echo -n "https://${Fiction[bind_address]}" || echo -n "https://${Fiction[bind_address]}:${Fiction[bind_port]}";
-          echo " (${Fiction[mode]} mode)";
-          ( exec -a "fiction" ncat -klp "${Fiction[bind_port]}" -c "$serverTmpDir/worker.sh" --ssl ${Fiction[ssl_cert]:+--ssl-cert "${Fiction[ssl_cert]}"} ${Fiction[ssl_key]:+--ssl-key "${Fiction[ssl_key]}"}; ) &
-          SERVER_PID=$!
-          [[ ${Fiction[mode]} =~ dev || ${Fiction[hot_reload]} = true ]] && _hotreload
+          ( 
+            exec -a "fiction" ncat -klp "${Fiction[bind_port]}" -c "$serverTmpDir/worker.sh" --ssl ${Fiction[ssl_cert]:+--ssl-cert "${Fiction[ssl_cert]}"} ${Fiction[ssl_key]:+--ssl-key "${Fiction[ssl_key]}"}; 
+          ) &
         else
-          [[ "${Fiction[bind_port]}" = 80 ]] && echo -n "http://${Fiction[bind_address]}" || echo -n "http://${Fiction[bind_address]}:${Fiction[bind_port]}";
-          echo " (${Fiction[mode]} mode)";
           ( exec -a "fiction" ncat -klp "${Fiction[bind_port]}" -c "$serverTmpDir/worker.sh"; ) &
-          SERVER_PID=$!
-          [[ ${Fiction[mode]} =~ dev || ${Fiction[hot_reload]} = true ]] && _hotreload
         fi
       ;;
       nc | netcat)
@@ -918,20 +919,26 @@ function fiction.server() {
         if "${Fiction[https]:=false}"; then
           error "HTTPS is not supported in legacy netcat mode" 1>&2
         else
-          [[ "${Fiction[bind_port]}" = 80 ]] && echo -n "http://${Fiction[bind_address]}" || echo -n "http://${Fiction[bind_address]}:${Fiction[bind_port]}";
-          echo " (${Fiction[mode]} mode)";
-          while true; do
-            (
+          (
+            while true; do
               exec -a "fiction" $nc_path -vklp "${Fiction[bind_port]}" -e "$serverTmpDir/worker.sh";
               (($? != 0)) && break
-            )
-          done
+            done
+          ) &
         fi
       ;;
       esac
+      SERVER_PID=$!
+      [[ ${Fiction[mode]} =~ dev || ${Fiction[hot_reload]} = true ]] && _hotreload &
+      while read line; do
+        case "$line" in
+          exit|quit|q) exit ;; 
+        esac
+      done
     ;;
   esac
 }
+
 
 
 _hotreload() {
@@ -939,10 +946,10 @@ _hotreload() {
   warn "Hot-Reload enabled. This is an experimental feature, use it with caution."
   if which inotifywait >/dev/null 2>&1; then
     i=0
-    inotifywait -qm --event modify --format '%w' $FICTION_PATH/src/* ${FICTION_PATH}fiction.so.sh | while read -r file; do
+    inotifywait -qm -t 2 --event modify --format '%w' $FICTION_PATH/src/* ${FICTION_PATH}fiction.so.sh | while read -r file; do
       ((i == 1)) && i=0 && continue  
       [[ ! "$file" =~ \.shx|\.bashx ]] && { source "$file" && printf "%s\n" "[$_green✓$_nc] Reloaded $file" || printf "%s\n" "[${_red}x${_nc}] Failed to reload $file"; } || BASHX_VERBOSE=true @import "$file"; 
-      _buildWorker
+      [[ ${Fiction[core]} != bash ]] && _buildWorker
       i=1
     done
   else
@@ -957,7 +964,7 @@ _hotreload() {
         [[ "$file2" == "${_files["$file"]}" ]] && continue
         printf "%s\n" "(hot-reload) Reloading $file..."
         [[ ! "$file" =~ \.shx|\.bashx ]] && { source "$file" && printf "%s\n" "[$_green✓$_nc] Reloaded $file" || printf "%s\n" "[${_red}x${_nc}] Failed to reload $file"; } || BASHX_VERBOSE=true @import "$file"; 
-        _buildWorker
+        [[ ${Fiction[core]} != bash ]] && _buildWorker
         _files["$file"]="$file2";
       done
     done
@@ -1072,8 +1079,14 @@ Available actions:
 EOF
 }
 
+clean() {
+  echo -e "\nStopping the server..."
+  [[ -n "$serverTmpDir" && -d "$serverTmpDir" ]] && rm -rf "$serverTmpDir"
+  [[ "$SERVER_PID" ]] && kill "$SERVER_PID" 2>/dev/null
+  exit
+}
 
-function declare_objects() {
+declare_objects() {
   [[ ${Fiction[routes]} != FictionRoute ]] && unset FictionRoute && declare -gn FictionRoute="${Fiction[routes]}"
   [[ ${Fiction[modules]} != FictionModule ]] && unset FictionModule && declare -gn FictionModule="${Fiction[modules]}"
   [[ ${Fiction[response]} != FictionResponse ]] && unset FictionResponse && declare -gn FictionResponse="${Fiction[responses]}"
@@ -1106,9 +1119,9 @@ EOF
   ;;
   esac
 else
+  [[ "$FICTION_HOTRELOAD" ]] || _modulesLoader
   if [[ "$FICTION_NESTED" != true ]]; then
     declare_objects
-    _modulesLoader
     if [[ "${Fiction[mode]}" == build ]]; then 
       _build
       exit

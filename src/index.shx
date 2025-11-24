@@ -1,7 +1,7 @@
 source fiction.so.sh
 function test() {
   fiction.respond 200 << EOF
-  { "echo": "$slug" }
+  { "slug": "$slug" }
 EOF
 }
 function main() {
@@ -17,7 +17,12 @@ function main() {
       echo "if you see this, then bash block works"
       echo "<div>yes</div>"
       </script>
-      $([[ "${FictionRequestHeaders[user-agent]}" =~ Firefox/((.*)) ]] && <p>You are using ${BASH_REMATCH[0]}</p> || <p>You are not using Firefox</p> )   
+      <div class="w-128 mx-auto text-left flex container">
+   <!--   <script type="text/x-bash"> -->
+       # neofetch --backend off | ./ansi2html.sh
+       $(which fastfetch >/dev/null 2>1 && fastfetch -l none --localip-show-ipv4 false | ./ansi2html.sh || <div class="text-3xl">fastfetch is not installed</div>)
+    <!--  </script> --> 
+      </div>
       <script type="text/x-bash">
       LANG=C.UTF-8
       </script>
