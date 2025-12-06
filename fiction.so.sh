@@ -21,7 +21,7 @@ declare -gA Fiction=(
   [response]=FictionResponse 
   [request]=FictionRequest 
   [mode]="${FICTION_MODE:=production}"
-  [core]="ncat"
+  [core]="socat"
   [expose_addr]=true
   [show_headers]=false
   [hot_reload]=true
@@ -334,7 +334,8 @@ function fiction.router() {
         )
       else
         parsePost
-        [[ "$func" == 'echo' ]] && $func ${funcargs//\"/\\\"} || $func "${funcargs//\"/\\\"}";
+        echo "$func ${funcargs}" >&2
+        [[ "$func" == 'echo' ]] && $func "${funcargs//\"/\\\"}" || $func ${funcargs};
       fi
     else
       if [[ -n "$ou2" ]]; then
@@ -764,11 +765,11 @@ function fiction.serveDir() {
     ROUTE_APPEND="${ROUTE_APPEND:0:0-1}";
   fi
   if [ -d "$1" ]; then
-    [[ "${4:-true}" == true ]] && fiction.serve "${ROUTE_APPEND}" "tree -H '$ROUTE_APPEND' -L 1 '$1'" "text/html";
+    [[ "${4:-true}" == true ]] && fiction.serve "${ROUTE_APPEND}" "tree -H \"$ROUTE_APPEND\" -L 1 '$(readlink -f $1)'" "text/html";
     test -e "$1/"* > /dev/null 2>&1 && for item in ${1}/*;
     do
       if [ -d "$item" ]; then
-        [[ "${5:-true}" == true ]] && fiction.serveDir "${item}" "${ROUTE_APPEND}/${item##*/}" > /dev/null;
+        [[ "${5:-true}" == true ]] && fiction.serveDir "${item}" "${ROUTE_APPEND}/${item##*/}" "$download" > /dev/null;
       else
         ROUTEPATH="${item}"
         if [ "${ROUTEPATH::1}" == "." ]; then
@@ -929,7 +930,7 @@ function fiction.server() {
       ;;
       esac
       SERVER_PID=$!
-      [[ ${Fiction[mode]} =~ dev || ${Fiction[hot_reload]} = true ]] && _hotreload &
+      [[ ${Fiction[mode]} =~ dev || ${Fiction[hot_reload]} = true ]] && _hotreload >&2 &
       while read line; do
         case "$line" in
           exit|quit|q) exit ;; 
@@ -946,7 +947,7 @@ _hotreload() {
   warn "Hot-Reload enabled. This is an experimental feature, use it with caution."
   if which inotifywait >/dev/null 2>&1; then
     i=0
-    inotifywait -qm -t 2 --event modify --format '%w' $FICTION_PATH/src/* ${FICTION_PATH}fiction.so.sh | while read -r file; do
+    inotifywait -qm --event modify --format '%w' $FICTION_PATH/src/* ${FICTION_PATH}fiction.so.sh | while read -r file; do
       ((i == 1)) && i=0 && continue  
       [[ ! "$file" =~ \.shx|\.bashx ]] && { source "$file" && printf "%s\n" "[$_green✓$_nc] Reloaded $file" || printf "%s\n" "[${_red}x${_nc}] Failed to reload $file"; } || BASHX_VERBOSE=true @import "$file"; 
       [[ ${Fiction[core]} != bash ]] && _buildWorker
@@ -1083,6 +1084,7 @@ clean() {
   echo -e "\nStopping the server..."
   [[ -n "$serverTmpDir" && -d "$serverTmpDir" ]] && rm -rf "$serverTmpDir"
   [[ "$SERVER_PID" ]] && kill "$SERVER_PID" 2>/dev/null
+  #kill -$$
   exit
 }
 
@@ -1091,7 +1093,7 @@ declare_objects() {
   [[ ${Fiction[modules]} != FictionModule ]] && unset FictionModule && declare -gn FictionModule="${Fiction[modules]}"
   [[ ${Fiction[response]} != FictionResponse ]] && unset FictionResponse && declare -gn FictionResponse="${Fiction[responses]}"
   [[ ${Fiction[request]} != FictionRequest ]] && unset FictionRequest && declare -gn FictionRequest="${Fiction[requests]}"
-  }
+}
 
 
 if ! (return 0 2>/dev/null); then
