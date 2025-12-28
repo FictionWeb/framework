@@ -23,7 +23,7 @@ declare -gA Fiction=(
   [mode]="${FICTION_MODE:=production}"
   [core]="socat"
   [expose_addr]=true
-  [show_headers]=false
+  [show_headers]=true
   [hot_reload]=true
   [encode_routes]=false # Whether encode routes storage file or not
   [default_index]="src/index.shx" # Default index file to execute (bashx, fiction run/dev/build)
@@ -53,6 +53,18 @@ declare -gA FictionModule=(
 declare -a __funcs;
 
 # Helper functions
+function subshell() {
+  var="$1"
+  shift
+  [ -e /proc/$$/fd/256 ] || exec 256<> <(cat)
+  $@ >&256
+  read "$var" <&256
+}
+
+function close_subshell() {
+  exec 256>&-
+}
+
 function @cache() {
   [ -z "$(declare -F "$1")" ] && return
   while declare -f "$1" | grep -q "{cache}"; do
@@ -75,7 +87,7 @@ function @cache() {
   eval "$(declare -f "$1" | awk -v start="$(($CACHEBLOCK_BEGIN - 1))" -v end="$(($CACHEBLOCK_END + 1))" -v r="$CACHE_DATA" 'NR < start { print; next } NR == start { split(r, a, "\n"); for (i in a) print a[i]; next } NR > end')"
   done
 
-  if [ -z "$DO_NOT_RERUN" ] && [ -n "$(declare -F "\\$1")" ]; then
+  if [ -z "$DO_NOT_RERUN" ] && subshell func declare -F "$1" && [ -n "$func" ]; then
   DO_NOT_RERUN=1 @cache "\\$1"
   return
   fi
@@ -95,13 +107,14 @@ function @prerender {
 function mktmpDir() {
   if [[ -z "$serverTmpDir" ]]; then
   ! pidof fiction >/dev/null && [ -d "$FICTION_PATH/.fiction" ] && rm -rf $FICTION_PATH/.fiction/* 2>&1 >/dev/null
-  serverTmpDir="$FICTION_PATH/.fiction/tmp_$(openssl rand -hex 16)"
+  subshell hex openssl rand -hex 16
+  serverTmpDir="$FICTION_PATH/.fiction/tmp_$hex"
   mkdir -p "$serverTmpDir"
   #echo $?
-  if [[ $? > 0 ]]; then
-    serverTmpDir="/tmp/.fiction/tmp_$(openssl rand -hex 16)"
-    mkdir -p "$serverTmpDir"
-  fi
+    if [[ $? > 0 ]]; then
+      serverTmpDir="/tmp/.fiction/tmp_$hex"
+      mkdir -p "$serverTmpDir"
+    fi
   fi
 }
 
@@ -254,11 +267,6 @@ __d() {
 }
 
 
-
-
-
-
-
 function generate_csrf_token() {
   openssl rand -base64 48
 }
@@ -281,7 +289,7 @@ parsePost() {
   if [[ "${FictionRequest[method]}" =~ "POST"|"PATCH"|"PUT" ]] && ((${FictionRequestHeaders['content-length']:=0} > 0)); then
   local entry
   if [[ "${FictionRequestHeaders["content-type"]}" == "application/x-www-form-urlencoded" ]]; then
-    IFS='&' read -rN "${FictionRequestHeaders["Content-Length"]}" -a data
+    IFS='&' read -rN "${FictionRequestHeaders["content-length"]}" -a data
     for entry in "${data[@]}"; do
     entry="${entry%%$'\r'}"
     POST["${entry%%=*}"]="${entry#*:}"
@@ -309,8 +317,8 @@ function fiction.router() {
     local route func route1 func1 m=false ou;
     #route1=$(echo "${FictionRequest[path]}" | sha256sum);
     routes=$(__d "$serverTmpDir/.routes");
-    ou=$(echo "$routes" | grep "${FictionRequest[path]}");
-    ou2=$(echo "$routes" | grep "dynamic");
+    ou=$(grep "${FictionRequest[path]}" <<< "$routes");
+    ou2=$(grep "dynamic" <<< "$routes");
     if [[ "$ou" ]]; then
       read type filetype route func <<< "$ou";
       read func funcargs <<< "$func";
@@ -329,7 +337,7 @@ function fiction.router() {
         HTTPS="${Fiction[https]}" \
         SCRIPT_FILENAME="$(basename -f "$func")" \
         HTTP_USER_AGENT="${FictionRequestHeaders[user-agent]}" \
-        HTTP_FictionRequestCookie="${FictionRequestHeaders[cookie]}" \
+        HTTP_COOKIE="${FictionRequestHeaders[cookie]}" \
         $func;
         )
       else
@@ -545,8 +553,10 @@ EOF
 
 function fiction.addServerAction() {
   [ -z "$1" ] && return
-  local path="/__server-action_$(echo "$1" | sha256sum)"
-  local path2="$(sha256sum <<< "${path::-3}")"
+  subshell hash sha256sum <<< "$1"
+  local path="/__server-action_$hash"
+  subshell path2 sha256sum <<< "${path::-3}"
+  unset hash path2
   [[ ! "$(__d "$serverTmpDir/.routes")" =~ ${path2::-3} ]] && fiction.serve "${path::-3}" "$1" "" api >&2
   [[ $? == 0 ]] && printf "%s" "serverAction('${path::-3}')" || return
   unset path json
@@ -564,13 +574,13 @@ function fiction.header.set() {
 }
 
 function fiction.session() {
-  [ ! -f "$serverTmpDir/.sessions" ] && { echo ""; return; }
+  [ ! -f "$serverTmpDir/.sessions" ] && return 1
   local s c s1 c1 m=false
-  s1=$(echo "$1" | sha256sum)
+  s1=$(sha256sum <<< "$1")
   ou=$(__d "$serverTmpDir/.sessions" | grep "${s1::-3}")
-  [ -n "$ou" ] && IFS=' ' read s c <<< "$ou" || { echo ""; return; }
-  [[ "${s1::-3}" == "$s" ]] || { echo ""; return; }
-  c1=$(base64 -d <<< "$c")
+  [ -n "$ou" ] && IFS=' ' read s c <<< "$ou" || return 1
+  [[ "${s1::-3}" == "$s" ]] || return 1
+  return 0
 }
 
 function fiction.response.cookie.set() {
@@ -579,41 +589,24 @@ function fiction.response.cookie.set() {
 
 function fiction.session.set() {
   if [ ! -f "$serverTmpDir/.sessions" ]; then
-  : >"$serverTmpDir/.sessions"
-  local session="$(generate_session_id)"
-  local ssession=$(echo "$session" | sha256sum)
-  local tok="$(generate_csrf_token | base64 -w 0)"
-  __e "${ssession::-3} $tok" "$serverTmpDir/.sessions"
-  fiction.cookie.set "session_id=${session}; HttpOnly; max-age=${1:-10000}"
-  SESSION_ID="${session}"
-  unset session tok
+    : >"$serverTmpDir/.sessions"
+    local session="$(generate_session_id)"
+    local ssession=$(sha256sum <<< "$session")
+    local token="$(generate_csrf_token | base64 -w 0)"
+    __e "${ssession::-3} $token" "$serverTmpDir/.sessions"
+    fiction.cookie.set "session_id=${session}; HttpOnly; max-age=${1:-10000}"
+    SESSION_ID="${session}"
+    unset session tok
   else
-  local ou="$(__d "$serverTmpDir/.sessions")"
-  local session="$(generate_session_id)"
-  local ssession=$(echo "$session" | sha256sum)
-  local tok="$(generate_csrf_token | base64 -w 0)"
-   ou+=$'\n'"${ssession::-3} $tok"
-  __e "$ou" "$serverTmpDir/.sessions"
+    local out="$(__d "$serverTmpDir/.sessions")"
+    local session="$(generate_session_id)"
+    local session_hash=$(sha256sum <<< "$session")
+    local token="$(generate_csrf_token | base64 -w 0)"
+    out+=$'\n'"${session_hash::-3} $token"
+  __e "$out" "$serverTmpDir/.sessions"
   fiction.cookie.set "session_id=${session}; HttpOnly; max-age=${1:-10000}"
   unset ou session tok
   fi
-}
-
-
-
-function fiction.request.getQuery() {
-  [ -z "$1" ] && return
-  IFS="=" read -r _ val <<<"${FictionRequestQuery["$1"]}"
-  echo "$val"
-}
-
-function fiction.request.getSlug() {
-  [ -z "$1" ] && return 1
-  echo "${!1}"
-}
-
-function fiction.getRoute() {
-  echo "${Fiction[route]}"
 }
 
 fiction.respond() {
@@ -732,7 +725,9 @@ function fiction.redirect() {
 
 function fiction.serveFile() {
   [ ! -f "$1" ] && error "$1 is not a file" && return 1
-  local ROUTEFN="FR$(uuidgen)";
+  subshell uuid uuidgen
+  local ROUTEFN="FR${uuid}";
+  unset uuid
   if [[ "$4" ]]; then
     declare -n __headers="$4"
     local hline='';
@@ -765,7 +760,12 @@ function fiction.serveDir() {
     ROUTE_APPEND="${ROUTE_APPEND:0:0-1}";
   fi
   if [ -d "$1" ]; then
-    [[ "${4:-true}" == true ]] && fiction.serve "${ROUTE_APPEND}" "tree -H \"$ROUTE_APPEND\" -L 1 '$(readlink -f $1)'" "text/html";
+    
+    if [[ "${4:-true}" == true ]]; then
+      subshell fullpath readlink -f $1
+      fiction.serve "${ROUTE_APPEND}" "tree -H \"$ROUTE_APPEND\" -L 1 '$fullpath'" "text/html";
+      unset fullpath
+    fi
     test -e "$1/"* > /dev/null 2>&1 && for item in ${1}/*;
     do
       if [ -d "$item" ]; then
@@ -957,7 +957,9 @@ _hotreload() {
     warn "inotify-tools package is not installed, Hot-Reload will use md5sum to compare files every 2s"
     declare -A _files=()
     for file in ${FICTION_PATH}fiction.so.sh $FICTION_PATH/src/*; do
-      _files["$file"]="$(md5sum "$file")";
+      subshell _var md5sum "$file"
+      _files["$file"]="$_var";
+      unset _var
     done
     while sleep 2; do
       for file in ${FICTION_PATH}fiction.so.sh $FICTION_PATH/src/*; do
@@ -1040,7 +1042,7 @@ _modulesLoader() {
           FictionModule[ui]="$file"
           source "$file/index.sh"
         else 
-          error "cannot load UI module ($file/index.sh)"
+          error "cannot find UI module ($file/index.sh)"
         fi
       ;;
       bashx)
@@ -1051,7 +1053,7 @@ _modulesLoader() {
           BASHX_NESTED=true 
           source "$file/bashx"
         else
-          error "cannot load bashx ($file/bashx)"
+          error "cannot find bashx ($file/bashx)"
         fi
       ;;
       bash-wasm)
@@ -1060,7 +1062,7 @@ _modulesLoader() {
           FictionModule[wasm]="$file"
           source "$file/index.sh"
         else
-          error "cannot load WASM module ($file/index.sh)"
+          error "cannot find WASM module ($file/index.sh)"
         fi
       ;;
     esac
