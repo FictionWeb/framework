@@ -3,13 +3,13 @@
 FICTION_PATH=$(readlink -f "${BASH_SOURCE[0]:-$0}")
 FICTION_PATH="${FICTION_PATH//fiction.so.sh}"
 [[ -v FICTION_META ]] || FICTION_META=""
-_green="$(tput setaf 2)"
-_red="$(tput setaf 1)"
-_yellow="$(tput setaf 3)"
-_white="$(tput setaf 255)"
-_bold="$(tput bold)"
-_gray="$(tput setaf 240)"
-_nc="$(tput sgr0)"
+_green=$'\e[38;5;2m'
+_red=$'\e[38;5;1m'
+_yellow=$'\e[38;5;3m'
+_white=$'\e[38;5;255m'
+_bold=$'\e[1m'
+_gray=$'\e[38;5;240m'
+_nc=$'\e[0m'
 
 # Main configuration object. It contains all options, paths, routes, arguments and modules
 declare -gA Fiction=(
@@ -24,9 +24,10 @@ declare -gA Fiction=(
   [core]="socat"
   [expose_addr]=true
   [show_headers]=true
-  [hot_reload]=true
+  [hot_reload]=false
+  [hot_reload_files]="$FICTION_PATH/pages/* ${FICTION_PATH}fiction.so.sh"
   [encode_routes]=false # Whether encode routes storage file or not
-  [default_index]="src/index.shx" # Default index file to execute (bashx, fiction run/dev/build)
+  [default_index]="pages/index.shx" # Default index file to execute (bashx, fiction run/dev/build)
 )
 
 #workerargs="-x"
@@ -52,17 +53,76 @@ declare -gA FictionModule=(
 
 declare -a __funcs;
 
+# Code structure
+# - subshell
+# - _hash
+# - _encode
+# - _decode
+# - _regex
+# - @cache
+# - @prerender
+# - mktmpDir
+# - error
+# - warn
+# - json_list
+# - json_to_arr
+# - urldecode 
+# - uuidgen
+# - httpSendStatus
+# - __e
+# - __d
+# - generate_csrf_token
+# - generate_session_id
+# - rename_fn
+# - parsePost
+# - fiction.router
+# - parseAndPrint
+# - fiction.addServerAction
+# - fiction.addMeta
+# - fiction.header.set
+# - fiction.session
+# - fiction.response.cookie.set
+# - fiction.session.set
+# - fiction.respond
+# - fiction.404
+# - fiction.500
+# - fiction
+# - fiction.serve
+# - fiction.serveDynamic
+# - fiction.serveCGI
+# - fiction.redirect
+# - fiction.serveFile
+# - fiction.serveDir
+# - fiction.server
+# - _hotreload
+# - _build
+# - _buildWorker
+# - _modulesLoader
+# - _helpmsg
+# - clean
+# - declare_objects
+
 # Helper functions
 function subshell() {
-  var="$1"
-  shift
-  [ -e /proc/$$/fd/256 ] || exec 256<> <(cat)
-  $@ >&256
-  read "$var" <&256
+  local var="$1"
+  #printf -v "$var" "$(${@:2})"
+#  return
+  ${@:2} >"/dev/shm/.fiction_out"
+  read -r -d $'\0' $var <"/dev/shm/.fiction_out"
 }
 
-function close_subshell() {
-  exec 256>&-
+subshell _green tput setaf 2
+
+function _hash() {
+  sha256sum <<< "$1"
+}
+
+function _encode() {
+  base64 -w 0 <<< "$1"
+}
+
+function _decode() {
+  base64 -d <<< "$1"
 }
 
 function @cache() {
@@ -106,13 +166,13 @@ function @prerender {
 
 function mktmpDir() {
   if [[ -z "$serverTmpDir" ]]; then
-  ! pidof fiction >/dev/null && [ -d "$FICTION_PATH/.fiction" ] && rm -rf $FICTION_PATH/.fiction/* 2>&1 >/dev/null
+  ! pidof fiction >/dev/null && [ -d "/dev/shm/.fiction" ] && rm -rf /dev/shm/.fiction/* 2>&1 >/dev/null
+  local hex
   subshell hex openssl rand -hex 16
-  serverTmpDir="$FICTION_PATH/.fiction/tmp_$hex"
-  mkdir -p "$serverTmpDir"
-  #echo $?
-    if [[ $? > 0 ]]; then
-      serverTmpDir="/tmp/.fiction/tmp_$hex"
+  serverTmpDir="/tmp/.fiction/tmp_$hex"
+ 
+    if ! mkdir -p "$serverTmpDir" 2>&1 >/dev/null; then
+      serverTmpDir="/dev/shm/.fiction/tmp_$hex"
       mkdir -p "$serverTmpDir"
     fi
   fi
@@ -254,9 +314,10 @@ httpSendStatus() {
 
   FictionResponse["status"]="${status_code[${1:-200}]}"
 }
-
-__x4gT9q6=( "$(openssl rand -hex 32)" "$(openssl rand -hex 16)" );
-
+subshell key1 openssl rand -hex 32
+subshell key2 openssl rand -hex 16
+__x4gT9q6=( "$key1" "$key2" );
+unset key1 key2
 
 __e() {
   "${Fiction[encode_routes]}" && openssl enc -aes-256-cbc -K "${__x4gT9q6[0]}" -iv "${__x4gT9q6[1]}" -out "$2" <<< "$1" || echo "$1" > "$2"
@@ -279,7 +340,6 @@ rename_fn() {
   local a
   a="$(declare -f "$1")" &&
   eval "function $2 ${a#*"()"}"
- # echo "renamed $1 to $2 $(declare -f $2)" >&2
   unset -f "$1";
 }
 
@@ -296,7 +356,8 @@ parsePost() {
     done
   elif [[ "${FictionRequestHeaders["content-type"]}" == "application/json" ]]; then
     read -N "${FictionRequestHeaders["content-length"]}" data
-    eval "$(json_to_arr "${data%%$'\r'}" POST)"
+    json_to_arr "${data%%$'\r'}" POST "" true
+    eval $json_to_arr_output
   else
     read -rN "${FictionRequestHeaders["content-length"]}" data
     POST["raw"]="${data%%$'\r'}"
@@ -305,9 +366,6 @@ parsePost() {
   fi
 }
 
-
-
-
 function fiction.router() {
   [[ "${FictionRequest[path]}" =~ ".."|"~" ]] && handled_by="fiction.404" && fiction.404
   [ "${FictionRequest[path]::2}" == "//" ] && FictionRequest[path]="${FictionRequest[path]:1}";
@@ -315,10 +373,9 @@ function fiction.router() {
   [[ "${FictionRequest[method]}" == 'POST' && -n "${FictionRequestHeaders['fiction-action']}" ]] && FictionRequest[path]="/${FictionRequestHeaders['fiction-action']}";
   if [ -f "$serverTmpDir/.routes" ]; then
     local route func route1 func1 m=false ou;
-    #route1=$(echo "${FictionRequest[path]}" | sha256sum);
-    routes=$(__d "$serverTmpDir/.routes");
-    ou=$(grep "${FictionRequest[path]}" <<< "$routes");
-    ou2=$(grep "dynamic" <<< "$routes");
+    subshell routes __d "$serverTmpDir/.routes";
+    subshell ou grep "${FictionRequest[path]}" <<< "$routes"
+    subshell ou2 grep "dynamic" <<< "$routes"
     if [[ "$ou" ]]; then
       read type filetype route func <<< "$ou";
       read func funcargs <<< "$func";
@@ -335,21 +392,21 @@ function fiction.router() {
         CONTENT_LENGTH="${FictionRequestHeaders[content-length]}" \
         SCRIPT_NAME="$func" \
         HTTPS="${Fiction[https]}" \
-        SCRIPT_FILENAME="$(basename -f "$func")" \
+        SCRIPT_FILENAME="$func" \
         HTTP_USER_AGENT="${FictionRequestHeaders[user-agent]}" \
         HTTP_COOKIE="${FictionRequestHeaders[cookie]}" \
         $func;
         )
       else
         parsePost
-        echo "$func ${funcargs}" >&2
         [[ "$func" == 'echo' ]] && $func "${funcargs//\"/\\\"}" || $func ${funcargs};
       fi
     else
       if [[ -n "$ou2" ]]; then
         while read route; do
           read type contenttype route func <<< "$route"
-          local regex=$(echo "$route" | sed -e 's#\[[^]]*\]#([^/]+)#g')
+          local regex
+          subshell regex sed -e 's#\[[^]]*\]#([^/]+)#g' <<< "$route"
           regex="${regex%/}/?"
           [[ "${FictionRequest[path]}" =~ $regex ]] || continue
           local slugs=$(echo "$route" | grep -oP '\[\K[^]]+(?=\])' | tr '\n' ' ' | sed 's/,$//')
@@ -359,22 +416,19 @@ function fiction.router() {
           $func
           return
         done <<< "$ou2"
-        handled_by="fiction.404";
         fiction.404
       else
-        handled_by="fiction.404";
         fiction.404;
       fi
     fi
   else
-    handled_by="fiction.404";
     fiction.404;
   fi
 }
 
 function parseAndPrint() {
-  time1=$(date +%s%3N)
-  local REQUEST_METHOD REQUEST_PATH HTTP_VERSION QUERY_STRING
+  subshell time1 date +%s%3N
+  local REQUEST_METHOD REQUEST_PATH HTTP_VERSION entry key value
   read -r REQUEST_METHOD REQUEST_PATH HTTP_VERSION
   HTTP_VERSION="${HTTP_VERSION%%$'\r'}"
   [[ "$HTTP_VERSION" =~ HTTP/[0-9]\.?[0-9]? ]] && HTTP_VERSION="${BASH_REMATCH[0]}"
@@ -392,27 +446,20 @@ function parseAndPrint() {
     _h="${line%%:*}"
     FictionRequestHeaders["${_h,,}"]="${line#*: }"
   done
-  unset line _h
-  local entry
+  local entry key value
   IFS='?' read -r REQUEST_PATH get <<<"$REQUEST_PATH"
-  get="$(urldecode "$get")"
+  subshell get urldecode "$get"
   IFS='#' read -r REQUEST_PATH _ <<<"$REQUEST_PATH"
-  QUERY_STRING="$get"
   IFS='&' read -ra data <<<"$get"
   for entry in "${data[@]}"; do
     FictionRequestQuery["${entry%%=*}"]="${entry#*=}"
   done
-  entry=''
-  local -a cookie
-  local key value
   IFS=';' read -ra cookie <<<"${FictionRequestHeaders["cookie"]}"
   [ -n "${FictionRequestHeaders["Cookie"]}" ] && ((${#cookie[@]} < 1 )) && cookie+=( ${FictionRequestHeaders["cookie"]//;} )
   for entry in ${cookie[@]}; do
     IFS='=' read -r key value <<<"$entry"
     [[ "$key" ]] && FictionRequestCookie["$key"]="${value}"
   done
-  unset entry cookie key value
-
   if [[ "${FictionRequest[method]}" == "POST" ]] && ((${FictionRequestHeaders['content-length']:=0} > 0)); then
     local entry
     if [[ "${FictionRequestHeaders["content-type"]}" == "application/x-www-form-urlencoded" ]]; then
@@ -423,24 +470,22 @@ function parseAndPrint() {
       done
     elif [[ "${FictionRequestHeaders["content-type"]}" == "application/json" ]]; then
       read -N "${FictionRequestHeaders["content-length"]}" data
-      eval $(json_to_arr "${data%%$'\r'}" FictionRequestData)
+      json_to_arr "${data%%$'\r'}" FictionRequestData "" true
+      eval "$json_to_arr_output"
     else
       read -rN "${FictionRequestHeaders["content-length"]}" data
       FictionRequestData["raw"]="${data%%$'\r'}"
     fi
-    unset entry
   fi
   filename="$serverTmpDir/output_$RANDOM"
-  [ -f "$filename" ] && rm "$filename"
   fiction.router >"$filename"
   [ -z "${FictionResponse["status"]}" ] && FictionResponse["status"]="200"
   printf '%s %s\n' "HTTP/1.1" "${FictionResponse["status"]}"
   local routetype="$type"
 
-  # printf '%s\n' "$(<"$filename")"
-   # cat "$filename" >&2
   if [[ -z "$filetype" || "$filetype" == "auto" ]]; then
-    local _ char type="$(file --mime "$filename")"
+    local _ char type
+    subshell type file --mime "$filename"
     IFS=' ' read _ type char <<<"$type"
     which file 2>&1 >/dev/null && FictionResponseHeaders["content-type"]="${type//;/}"
     unset _ type char
@@ -450,10 +495,10 @@ function parseAndPrint() {
 
   if [[ "${FictionResponseHeaders["content-type"]}" =~ html && "$routetype" != cgi ]]; then
     local isdoctype=false ishtml=false isbody=false iscbody=false ishead=false ischtml=false ischead=false
-    local output=$(<"$filename")
+    local output
+    subshell output cat "$filename"
     if [[ "${output::6}" != '<html>' && "${output::15}" != '<!DOCTYPE html>' ]]; then
-  #local csrf=$(sessionGet "$SESSION_ID")
-    (
+    {
       cat << EOF 
 <!DOCTYPE html>
 <html>
@@ -461,7 +506,7 @@ function parseAndPrint() {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   ${FictionResponse[head]}$FICTION_META
 EOF
-    "${Fiction[include_dom]:-false}" && echo "<script>$(<"$dom_path")</script>";
+    "${Fiction[include_dom]:-false}" && echo "<script>" && cat "$dom_path" && echo "</script>";
     if "${Fiction[include_wasm]:-false}"; then
       cat << EOF
         <script>
@@ -491,10 +536,11 @@ EOF
     [[ "${output::5}" == "<body" ]] && echo "$output" || echo "<body>$output</body>";
     "${Fiction[include_lucide]}" && echo '<script>lucide.createIcons();</script>'
     echo "</html>";
-  ) > "$filename";
+  } > "$filename";
   fi
   fi
-  read size filename < <(wc -c "$filename")
+  subshell filesize wc -c "$filename"
+  read size filename <<<"$filesize"
   FictionResponseHeaders["content-length"]="${size:=0}"
   if [[ "$routetype" != "cgi" ]]; then
     for key in "${!FictionResponseHeaders[@]}"; do
@@ -508,7 +554,9 @@ EOF
   cat "$filename"
   printf "\n"
   rm "$filename"
-  local time=$(($(date +%s%3N)-time1))
+  local time2
+  subshell time2 date +%s%3N
+  local time=$((time2-time1))
   if ((time < 150)); then
     time="${_green}${time}${_nc}ms"
   elif ((time < 500)); then 
@@ -553,13 +601,12 @@ EOF
 
 function fiction.addServerAction() {
   [ -z "$1" ] && return
-  subshell hash sha256sum <<< "$1"
-  local path="/__server-action_$hash"
-  subshell path2 sha256sum <<< "${path::-3}"
-  unset hash path2
-  [[ ! "$(__d "$serverTmpDir/.routes")" =~ ${path2::-3} ]] && fiction.serve "${path::-3}" "$1" "" api >&2
+  subshell hash _hash "$1"
+  local json path="/__server-action_$hash" routes=""
+  subshell path2 _hash "${path::-3}"
+  subshell routes __d "$serverTmpDir/.routes"
+  [[ ! "$routes" =~ ${path2::-3} ]] && fiction.serve "${path::-3}" "$1" "" api >&2
   [[ $? == 0 ]] && printf "%s" "serverAction('${path::-3}')" || return
-  unset path json
 }
 
 
@@ -575,11 +622,12 @@ function fiction.header.set() {
 
 function fiction.session() {
   [ ! -f "$serverTmpDir/.sessions" ] && return 1
-  local s c s1 c1 m=false
-  s1=$(sha256sum <<< "$1")
-  ou=$(__d "$serverTmpDir/.sessions" | grep "${s1::-3}")
-  [ -n "$ou" ] && IFS=' ' read s c <<< "$ou" || return 1
-  [[ "${s1::-3}" == "$s" ]] || return 1
+  local session csrf hash csrf m=false ou
+  subshell hash _hash "$1"
+  subshell ou __d "$serverTmpDir/.sessions"
+  subshell ou _regex "${hash::-3}" "$ou"
+  [ -n "$ou" ] && IFS=' ' read session csrf <<< "$ou" || return 1
+  [[ "${hash::-3}" == "$session" ]] || return 1
   return 0
 }
 
@@ -590,22 +638,24 @@ function fiction.response.cookie.set() {
 function fiction.session.set() {
   if [ ! -f "$serverTmpDir/.sessions" ]; then
     : >"$serverTmpDir/.sessions"
-    local session="$(generate_session_id)"
-    local ssession=$(sha256sum <<< "$session")
-    local token="$(generate_csrf_token | base64 -w 0)"
+    local session session_hash token out
+    subshell session generate_session_id
+    subshell session_hash _hash "$session"
+    subshell token generate_csrf_token
+    subshell token _encode "$token"
     __e "${ssession::-3} $token" "$serverTmpDir/.sessions"
     fiction.cookie.set "session_id=${session}; HttpOnly; max-age=${1:-10000}"
     SESSION_ID="${session}"
-    unset session tok
   else
-    local out="$(__d "$serverTmpDir/.sessions")"
-    local session="$(generate_session_id)"
-    local session_hash=$(sha256sum <<< "$session")
-    local token="$(generate_csrf_token | base64 -w 0)"
+    local session session_hash token out
+    subshell session generate_session_id
+    subshell session_hash _hash "$session"
+    subshell token generate_csrf_token
+    subshell token _encode "$token"
     out+=$'\n'"${session_hash::-3} $token"
-  __e "$out" "$serverTmpDir/.sessions"
-  fiction.cookie.set "session_id=${session}; HttpOnly; max-age=${1:-10000}"
-  unset ou session tok
+    __e "$out" "$serverTmpDir/.sessions"
+    fiction.cookie.set "session_id=${session}; HttpOnly; max-age=${1:-10000}"
+    SESSION_ID="${session}"
   fi
 }
 
@@ -622,6 +672,7 @@ fiction.respond() {
 fiction.404() {
 #  INCLUDE_DOM=false
 #  Fiction[include_lucide]=false
+  handled_by="fiction.404"
   fiction.header.set "server" "Fiction/${Fiction[version]//v}"
   fiction.respond 404 <<- EOF
   <!DOCTYPE html>
@@ -641,6 +692,7 @@ EOF
 }
 
 fiction.500() {
+  handled_by="fiction.500"
   fiction.header.set "server" "Fiction/${Fiction[version]//v}"
   fiction.respond 500 <<- EOF
   <!DOCTYPE html>
@@ -677,11 +729,13 @@ function fiction() {
   echo "Available functions:"
   local var=$(declare -F | sed -n -e '/fiction/ { /\./ p; }')
   echo "${var//declare -f/ }"
+
 }
 
 
 function fiction.serve() {
   # fiction.serve <from> <to:fn> <as> <type?> <headers?>
+  local funcname route
   [[ "$FICTION_HOTRELOAD" ]] && return
   [[ -z "$1" || -z "$2" ]] && return 1
   mktmpDir
@@ -696,12 +750,11 @@ function fiction.serve() {
   if [ ! -f "$serverTmpDir/.routes" ]; then
     : >"$serverTmpDir/.routes"
     __e "$type ${3:-auto} $route $funcname" "$serverTmpDir/.routes"
-    unset ou route funcname
   else
-    local ou="$(__d "$serverTmpDir/.routes")"
+    local ou 
+    subshell ou __d "$serverTmpDir/.routes"
     ou+=$'\n'"$type ${3:-auto} $route $funcname"
     __e "$ou" "$serverTmpDir/.routes"
-    unset ou route funcname
   fi
   echo "[${_white}+${_nc}] Added ${type} route: from ${_bold}'$1'${_nc} to ${_bold}'$2'${_nc} ${3:+as '$3'}"
 }
@@ -793,7 +846,7 @@ function fiction.server() {
 
   fi
   [[ "$FICTION_BUILD" || "$FICTION_HOTRELOAD" ]] && return
-  local origaddress="$1";
+  local address port origaddress="$1";
   [[ $origaddress ]] || error "Bind address required"
   if [[ "$origaddress" =~ "https://" ]]; then
     Fiction[https]=true;
@@ -805,7 +858,6 @@ function fiction.server() {
   [[ -z "$port" ]] && { "${Fiction[https]:=false}" && port=443 || port=80; }
   Fiction[bind_address]="$address"
   Fiction[bind_port]="$port"
-  unset address port
   shift;
   if [[ "$#" > 0 ]]; then
     for arg in "${@}"; do
@@ -850,6 +902,7 @@ function fiction.server() {
   [[ "${Fiction[include_wasm]}" == true && "${Fiction[https]:=false}" == false ]] && error "Running the website with WASM included on HTTP. Modern browsers will not allow WASM initialization from HTTP origin. In case it's a development server, consider using ncat for running a temporary HTTPS server." && return 1
   mktmpDir
   trap clean EXIT;
+  unset origaddress address port arg attr
   case "${Fiction[core]}" in
     bash)
       if "${Fiction[https]:=false}"; then
@@ -945,9 +998,10 @@ function fiction.server() {
 _hotreload() {
   FICTION_HOTRELOAD=true
   warn "Hot-Reload enabled. This is an experimental feature, use it with caution."
+  local file
   if which inotifywait >/dev/null 2>&1; then
     i=0
-    inotifywait -qm --event modify --format '%w' $FICTION_PATH/src/* ${FICTION_PATH}fiction.so.sh | while read -r file; do
+    inotifywait -qm --event modify --format '%w' ${Fiction[hot_reload_files]} | while read -r file; do
       ((i == 1)) && i=0 && continue  
       [[ ! "$file" =~ \.shx|\.bashx ]] && { source "$file" && printf "%s\n" "[$_green✓$_nc] Reloaded $file" || printf "%s\n" "[${_red}x${_nc}] Failed to reload $file"; } || BASHX_VERBOSE=true @import "$file"; 
       [[ ${Fiction[core]} != bash ]] && _buildWorker
@@ -956,14 +1010,14 @@ _hotreload() {
   else
     warn "inotify-tools package is not installed, Hot-Reload will use md5sum to compare files every 2s"
     declare -A _files=()
-    for file in ${FICTION_PATH}fiction.so.sh $FICTION_PATH/src/*; do
+    for file in ${Fiction[hot_reload_files]}; do
       subshell _var md5sum "$file"
       _files["$file"]="$_var";
       unset _var
     done
     while sleep 2; do
-      for file in ${FICTION_PATH}fiction.so.sh $FICTION_PATH/src/*; do
-        file2=$(md5sum "$file")
+      for file in ${Fiction[hot_reload_files]}; do
+        subshell file2 md5sum "$file"
         [[ "$file2" == "${_files["$file"]}" ]] && continue
         printf "%s\n" "(hot-reload) Reloading $file..."
         [[ ! "$file" =~ \.shx|\.bashx ]] && { source "$file" && printf "%s\n" "[$_green✓$_nc] Reloaded $file" || printf "%s\n" "[${_red}x${_nc}] Failed to reload $file"; } || BASHX_VERBOSE=true @import "$file"; 
@@ -976,7 +1030,7 @@ _hotreload() {
 
 _build() {
   echo "Initializing build..."
-  time=$(date +%s%3N)
+  subshell time date +%s%3N
   Fiction[mode]=build
   [[ "$2" ]] && Fiction[default_index]="$2"
   [[ "$3" ]] && target_dir="$3"
@@ -1004,14 +1058,14 @@ _build() {
 }
 
 _buildWorker() {
-  ( 
+  { 
     echo "#!/bin/bash"
     echo "FICTION_PATH='$FICTION_PATH'"
     declare -A
     unset -f fiction.server @cache @prerender
     [[ "${FictionModule[bashx]}" ]] && unset -f @import bashx mktmpDir @render_type @wrapper _render _conditionalRender
     declare | \
-      grep -vE '(^Fiction*=|^chunk=|^newblock=|^out1=|^GPG|^SHELL|^SESSION_|^OS|^KDE_*|^GTK*|^XDG*|^XKB*|^PAM*|^KONSOLE*|^SSH_*|^QT_*|^PWD|^OLDPWD|^TERM|^HOME|^USER|^PATH|^BASH_*|^BASHOPTS|^EUID|^PPID|^SHELLOPTS|^UID)'
+      grep -vE '(^DBUS_SESSION_BUS_ADDRESS|^WAYLAND_|^FUNCNAME|^LANG|^ICEAUTHORITY*|^MEMORY_PRESSURE*|^LS_COLORS*|^HOST*|^WASMER*|^Fiction.*=|^chunk=|^newblock=|^out1=|^GPG|^SHELL|^SESSION_|^OS|^KDE_*|^GTK*|^XDG*|^XKB*|^PAM*|^KONSOLE*|^SSH_*|^QT_*|^PWD|^OLDPWD|^TERM|^HOME|^USER|^PATH|^BASH_*|^BASHOPTS|^EUID|^PPID|^SHELLOPTS|^UID)'
       cat <<EOF
 HEADERS=""
 while read -r val; do
@@ -1025,8 +1079,8 @@ done
 $([[ "$workerargs" ]] && echo 'set $workerargs')
 parseAndPrint <<<"\$HEADERS"
 EOF
-    ) >"$serverTmpDir/worker.sh";
-    chmod +x "$serverTmpDir/worker.sh";
+  } >"$serverTmpDir/worker.sh";
+  chmod +x "$serverTmpDir/worker.sh";
 }
 
 _modulesLoader() {
@@ -1096,7 +1150,6 @@ declare_objects() {
   [[ ${Fiction[response]} != FictionResponse ]] && unset FictionResponse && declare -gn FictionResponse="${Fiction[responses]}"
   [[ ${Fiction[request]} != FictionRequest ]] && unset FictionRequest && declare -gn FictionRequest="${Fiction[requests]}"
 }
-
 
 if ! (return 0 2>/dev/null); then
   case "$1" in

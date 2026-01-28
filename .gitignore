@@ -2,5 +2,7 @@ index.sh
 server.crt
 server.key
 .fiction
-modules
+modules/dom
+modules/test_ui
+modules/bash-wasm
 fiction_compiled
