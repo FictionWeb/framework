@@ -1,4 +1,4 @@
-source fiction.so.sh
+source fiction.so.sh 2>/dev/null
 function test() {
   if [[ "${FictionRequest[method]}" == POST ]]; then 
     echo "${FictionRequestData[@]}" >&2

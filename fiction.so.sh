@@ -20,7 +20,7 @@ declare -gA Fiction=(
   [modules]=FictionModule
   [response]=FictionResponse 
   [request]=FictionRequest 
-  [mode]="${FICTION_MODE:=production}"
+  [mode]="${FICTION_MODE:-production}"
   [core]="socat"
   [expose_addr]=true
   [show_headers]=true
@@ -912,8 +912,8 @@ function fiction.server() {
         [ ! -f "${FictionModule[accept]}" ] && error "\`accept\` is not found in ${Fiction[path]}" && return 1;
         enable -f "${FictionModule[accept]}" accept;
         [[ "${Fiction[bind_port]}" = 80 ]] && \
-        echo -e "\nServer address: http://${Fiction[bind_address]} (${Fiction[mode]} mode)" || \
-        echo -e "\nServer address: http://${Fiction[bind_address]}:${Fiction[bind_port]} (${Fiction[mode]} mode)";
+        echo -e "\nServer address: http://${Fiction[bind_address]} (${FICTION_MODE:-${Fiction[mode]}} mode)" || \
+        echo -e "\nServer address: http://${Fiction[bind_address]}:${Fiction[bind_port]} (${FICTION_MODE:-${Fiction[mode]}} mode)";
         (
           while true; do
             accept -b "${Fiction[bind_address]}" -r REMOTE_ADDR "${Fiction[bind_port]}";
@@ -944,7 +944,7 @@ function fiction.server() {
           echo -n "http://${Fiction[bind_address]}" || \
           echo -n "http://${Fiction[bind_address]}:${Fiction[bind_port]}";
       fi
-      echo " (${Fiction[mode]} mode)";
+      echo " (${FICTION_MODE:-${Fiction[mode]}} mode)";
       case "${Fiction[core]:-socat}" in
       socat)
         which socat >/dev/null || { error "cannot find socat binary" && return 1; }
@@ -953,7 +953,7 @@ function fiction.server() {
             exec -a "fiction" socat openssl-listen:"${Fiction[bind_port]}",bind="${Fiction[bind_address]}",verify=0,${Fiction[ssl_cert]:+cert="${Fiction[ssl_cert]}",}${Fiction[ssl_key]:+key="${Fiction[ssl_key]}",}reuseaddr,fork SYSTEM:"$serverTmpDir/job.sh";
           ) &
         else
-          echo " (${Fiction[mode]} mode)";
+          echo " (${FICTION_MODE:-${Fiction[mode]}} mode)";
           ( exec -a "fiction" socat TCP-LISTEN:${Fiction[bind_port]},bind="${Fiction[bind_address]}",reuseaddr,fork EXEC:''"$serverTmpDir"'/worker.sh'; ) &
         fi
       ;;
