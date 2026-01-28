@@ -37,4 +37,4 @@ function main() {
 
 fiction.serve "/" "main" "text/html"
 fiction.serve "/test/foo:bar" "test"
-fiction.server "http://0.0.0.0:8080" core="ncat"
+fiction.server "http://0.0.0.0:8080" core="bash"

@@ -10,7 +10,7 @@ _white=$'\e[38;5;255m'
 _bold=$'\e[1m'
 _gray=$'\e[38;5;240m'
 _nc=$'\e[0m'
-
+[[ "$FICTION_NESTED" == true ]] && return
 # Main configuration object. It contains all options, paths, routes, arguments and modules
 declare -gA Fiction=(
   [version]="v1.0.0-prerelease" # Server's version
