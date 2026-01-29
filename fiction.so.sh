@@ -431,7 +431,7 @@ function parseAndPrint() {
   local REQUEST_METHOD REQUEST_PATH HTTP_VERSION entry key value
   read -r REQUEST_METHOD REQUEST_PATH HTTP_VERSION
   HTTP_VERSION="${HTTP_VERSION%%$'\r'}"
-  [[ "$HTTP_VERSION" =~ HTTP/[0-9]\.?[0-9]? ]] && HTTP_VERSION="${BASH_REMATCH[0]}"
+  [[ "$HTTP_VERSION" =~ HTTP/[0-9]\.?[0-9]? ]] && HTTP_VERSION="${BASH_REMATCH[0]}" || return
   [[ -z "$REQUEST_METHOD" || -z "$REQUEST_PATH" ]] && return
   FictionRequest=(
     [method]="$REQUEST_METHOD"
@@ -927,7 +927,7 @@ function fiction.server() {
         [[ ${Fiction[mode]} =~ dev || ${Fiction[hot_reload]} = true ]] && _hotreload &
         while read line; do
           case "$line" in
-            exit|quit|q) exit ;; 
+            exit|quit|q|stop) exit ;; 
           esac
         done
       fi
@@ -986,7 +986,7 @@ function fiction.server() {
       [[ ${Fiction[mode]} =~ dev || ${Fiction[hot_reload]} = true ]] && _hotreload >&2 &
       while read line; do
         case "$line" in
-          exit|quit|q) exit ;; 
+          exit|quit|q|stop) exit ;; 
         esac
       done
     ;;
