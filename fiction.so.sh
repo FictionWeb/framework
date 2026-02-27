@@ -19,15 +19,7 @@ declare -gA Fiction=(
   [routes]=FictionRoute 
   [modules]=FictionModule
   [response]=FictionResponse 
-  [request]=FictionRequest 
-  [mode]="${FICTION_MODE:-production}"
-  [core]="socat"
-  [expose_addr]=true
-  [show_headers]=true
-  [hot_reload]=false
-  [hot_reload_files]="$FICTION_PATH/pages/* ${FICTION_PATH}fiction.so.sh"
-  [encode_routes]=false # Whether encode routes storage file or not
-  [default_index]="pages/index.shx" # Default index file to execute (bashx, fiction run/dev/build)
+  [request]=FictionRequest
 )
 
 #workerargs="-x"
@@ -178,13 +170,13 @@ function mktmpDir() {
   fi
 }
 
-function error() {
+function _error() {
   [[ ${#FUNCNAME[@]} > 1 ]] && echo -n "(${FUNCNAME[1]}) " >&2
   echo "${_red}Error:${_nc} ${1}" >&2
   #[[ "$2" ]] && FUNCTION_ERROR=
 }
 
-function warn() {
+function _warn() {
   echo -e "${_yellow}⚠ $@${_nc}" >&2
 }
 
@@ -391,7 +383,7 @@ function fiction.router() {
         FictionRequest[path]="${FictionRequest[path]}" \
         CONTENT_LENGTH="${FictionRequestHeaders[content-length]}" \
         SCRIPT_NAME="$func" \
-        HTTPS="${Fiction[https]}" \
+        HTTPS="${Fiction[ssl.enabled]}" \
         SCRIPT_FILENAME="$func" \
         HTTP_USER_AGENT="${FictionRequestHeaders[user-agent]}" \
         HTTP_COOKIE="${FictionRequestHeaders[cookie]}" \
@@ -505,36 +497,10 @@ function parseAndPrint() {
   <head>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   ${FictionResponse[head]}$FICTION_META
+  </head>
 EOF
-    "${Fiction[include_dom]:-false}" && echo "<script>" && cat "$dom_path" && echo "</script>";
-    if "${Fiction[include_wasm]:-false}"; then
-      cat << EOF
-        <script>
-    let queue = [];
-    let stdoutBuffer = "";
-    let stderrBuffer = "";
-    window.execute = async function execute(command,id) {
-    if (id == undefined) id = null;
-    return new Promise(() => queue.push([command,id]));
-    }
-  </script>
-EOF
-      if declare -F wasmBundle >/dev/null; then
-        fiction.header.set "Cross-Origin-Opener-Policy" "same-origin"
-        fiction.header.set "Cross-Origin-Embedder-Policy" "require-corp"
-        [[ -v FICTION_ROUTE ]] || FICTION_ROUTE="${FictionRequest[path]}"
-        [[ -v FICTION_VERSION ]] || FICTION_VERSION="${Fiction[version]}"
-        exportVariable FICTION_VERSION FICTION_ROUTE
-        wasmBundle
-      else
-        error "Cannot load WASM module, file isn't loaded or not found"
-      fi
-    fi;
-    "${Fiction[include_tailwind]:-true}" && echo '<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>';
-    "${Fiction[include_lucide]:=true}" && echo '<script src="https://unpkg.com/lucide@latest"></script>';
-    echo '</head>';
     [[ "${output::5}" == "<body" ]] && echo "$output" || echo "<body>$output</body>";
-    "${Fiction[include_lucide]}" && echo '<script>lucide.createIcons();</script>'
+    [[ "${Fiction[plugins@v]}" =~ "lucide-icons" ]] && echo '<script>lucide.createIcons();</script>'
     echo "</html>";
   } > "$filename";
   fi
@@ -583,16 +549,16 @@ EOF
 ${_gray}${timestamp}${_nc} ${FictionRequest[version]} ${FictionRequest[method]} ${FictionRequest[path]} $status in $time ($size)
 Handled by: $handled_by
 EOF
-[[ "${Fiction[expose_addr]}" = true ]] && echo "Address: ${FictionRequestHeaders[x-forwarded-for]:=${FictionRequest[addr]}}" >&2
+[[ "${Fiction[logs.show_addr]}" = true ]] && echo "Address: ${FictionRequestHeaders[x-forwarded-for]:=${FictionRequest[addr]}}" >&2
 
-    if [[ "${Fiction[show_headers]}" = true ]]; then
+    if [[ "${Fiction[logs.show_headers]}" = true ]]; then
       echo "Headers: " >&2
       for key in ${!FictionRequestHeaders[@]}; do 
         echo "${_bold}$key:${_nc} ${FictionRequestHeaders[$key]}" >&2;
       done
     fi
   else
-    echo "${_gray}${timestamp}${_nc} ${Fiction[expose_addr]:+$REMOTE_ADDR} ${FictionRequest[method]} ${FictionRequest[path]} $status $time" >&2
+    echo "${_gray}${timestamp}${_nc} ${Fiction[logs.show_addr]:+$REMOTE_ADDR} ${FictionRequest[method]} ${FictionRequest[path]} $status $time" >&2
   fi
   unset status handled_by routetype size time
 }
@@ -611,7 +577,6 @@ function fiction.addServerAction() {
 
 
 function fiction.addMeta() {
-  FICTION_META+="$@"$'\n'
   FictionResponse[head]+="$@"$'\n'
 }
 
@@ -661,7 +626,7 @@ function fiction.session.set() {
 
 fiction.respond() {
   local output;
-  [[ -z "$1" ]] && error "At least one argument expected" >&2 && return 1
+  [[ -z "$1" ]] && _error "At least one argument expected" >&2 && return 1
   FictionResponse["status"]="$1"
   [[ -z "$2" ]] && while read chunk; do output+="$chunk"$'\n'; done || local output="$2"
   echo "$output"
@@ -698,7 +663,7 @@ fiction.500() {
   <!DOCTYPE html>
    <html style="font-family: ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';background-color:black;color:white;">
     <meta>
-      <title>Server Error - Fiction</title>
+      <title>Server _error - Fiction</title>
     </meta>
     <body>
         <div style="text-align: center;">
@@ -743,8 +708,8 @@ function fiction.serve() {
   if [[ "${Fiction[mode]}" == build ]]; then
     [[ "$3" == text/html ]] || return
   fi
-  [[ "${FictionRoute["$1"]}" ]] && error "Dublicate of existing route $1" && return 1 || FictionRoute["$1"]="$3"
-  [[ $type == cgi ]] && [ ! -x "$2" ] && error "$2 is not an executable. Check if the file exists and has executable permission" && return 1
+  [[ "${FictionRoute["$1"]}" ]] && _error "Dublicate of existing route $1" && return 1 || FictionRoute["$1"]="$3"
+  [[ $type == cgi ]] && [ ! -x "$2" ] && _error "$2 is not an executable. Check if the file exists and has executable permission" && return 1
   funcname="$2";
   route="$1"
   if [ ! -f "$serverTmpDir/.routes" ]; then
@@ -770,14 +735,14 @@ function fiction.serveCGI() {
 }
 
 function fiction.redirect() {
-  [[ -z "$1" ]] && error "Expected \$1, but got null" && fiction.500 && return
+  [[ -z "$1" ]] && _error "Expected \$1, but got null" && fiction.500 && return
   fiction.header.set "server" "Fiction/${Fiction[version]}"
   fiction.header.set "location" "$1"
   fiction.respond 301
 }
 
 function fiction.serveFile() {
-  [ ! -f "$1" ] && error "$1 is not a file" && return 1
+  [ ! -f "$1" ] && _error "$1 is not a file" && return 1
   subshell uuid uuidgen
   local ROUTEFN="FR${uuid}";
   unset uuid
@@ -832,7 +797,7 @@ function fiction.serveDir() {
       fi
     done
   else
-    error "$1 is not a directory"
+    _error "$1 is not a directory"
     return 1;
   fi
 }
@@ -846,48 +811,6 @@ function fiction.server() {
 
   fi
   [[ "$FICTION_BUILD" || "$FICTION_HOTRELOAD" ]] && return
-  local address port origaddress="$1";
-  [[ $origaddress ]] || error "Bind address required"
-  if [[ "$origaddress" =~ "https://" ]]; then
-    Fiction[https]=true;
-    origaddress="${origaddress//https:\/\//}";
-  else
-    [[ "$origaddress" =~ "http://" ]] && origaddress="${origaddress//http:\/\//}";
-  fi
-  IFS=':' read -r address port <<< "$origaddress";
-  [[ -z "$port" ]] && { "${Fiction[https]:=false}" && port=443 || port=80; }
-  Fiction[bind_address]="$address"
-  Fiction[bind_port]="$port"
-  shift;
-  if [[ "$#" > 0 ]]; then
-    for arg in "${@}"; do
-      IFS='=' read key value <<< "$arg";
-      [[ -z "$value" ]] && continue;
-      case "$key" in
-        ssl)  Fiction[https]=true ;;
-        ssl_cert) 
-          [ -f "$value" ] && Fiction[ssl_cert]="$value" || {
-            error "ssl_cert: $value: no such file" && return 1
-          }
-        ;;
-        ssl_key)
-          [ -f "$value" ] && Fiction[ssl_key]="$value" || {
-            error "ssl_key: $value: no such file" && return 1
-          }
-        ;;
-        include_lucide) Fiction[include_lucide]="$value" ;;
-        include_tailwind) Fiction[include_tailwind]="$value" ;;
-        include_wasm) Fiction[include_wasm]="$value" ;;
-        expose_addr) Fiction[expose_addr]="$value" ;;
-        core) Fiction[core]="$value" ;;
-        *)
-          error "Illegal option: $key" 1>&2;
-          return 1
-        ;;
-      esac
-    done
-    unset key value
-  fi
   printf "\n%s\n" "Fiction (${_green}${Fiction[version]}${_nc})"
   i=1
   for route in ${!FictionModule[@]}; do
@@ -899,32 +822,33 @@ function fiction.server() {
     fi
     ((i++))
   done
-  [[ "${Fiction[include_wasm]}" == true && "${Fiction[https]:=false}" == false ]] && error "Running the website with WASM included on HTTP. Modern browsers will not allow WASM initialization from HTTP origin. In case it's a development server, consider using ncat for running a temporary HTTPS server." && return 1
+  #[[ "${Fiction[include_wasm]}" == true && "${Fiction[ssl.enabled]:=false}" == false ]] && _error "Running the website with WASM included on HTTP. Modern browsers will not allow WASM initialization from HTTP origin. In case it's a development server, consider using ncat for running a temporary HTTPS server." && return 1
   mktmpDir
   trap clean EXIT;
   unset origaddress address port arg attr
   case "${Fiction[core]}" in
     bash)
-      if "${Fiction[https]:=false}"; then
-        error "HTTPS isn't available in development core. Use ncat or socat for HTTPS server"
+      if "${Fiction[ssl.enabled]:=false}"; then
+        _error "HTTPS isn't available in development core. Use ncat or socat for HTTPS server"
         exit 1
       else
-        [ ! -f "${FictionModule[accept]}" ] && error "\`accept\` is not found in ${Fiction[path]}" && return 1;
+        [ ! -f "${FictionModule[accept]}" ] && _error "\`accept\` is not found in ${Fiction[path]}" && return 1;
         enable -f "${FictionModule[accept]}" accept;
-        [[ "${Fiction[bind_port]}" = 80 ]] && \
-        echo -e "\nServer address: http://${Fiction[bind_address]} (${FICTION_MODE:-${Fiction[mode]}} mode)" || \
-        echo -e "\nServer address: http://${Fiction[bind_address]}:${Fiction[bind_port]} (${FICTION_MODE:-${Fiction[mode]}} mode)";
-        (
+        [[ "${Fiction[port]}" = 80 ]] && \
+        echo -e "\nServer address: http://${Fiction[address]} (${FICTION_MODE:-${Fiction[mode]}} mode)" || \
+        echo -e "\nServer address: http://${Fiction[address]}:${Fiction[port]} (${FICTION_MODE:-${Fiction[mode]}} mode)";
+        {
           while true; do
-            accept -b "${Fiction[bind_address]}" -r REMOTE_ADDR "${Fiction[bind_port]}";
+            accept -b "${Fiction[address]}" -r REMOTE_ADDR "${Fiction[port]}";
             if [[ -n "$ACCEPT_FD" ]]; then
               parseAndPrint <&${ACCEPT_FD} >&${ACCEPT_FD};
               exec {ACCEPT_FD}>&-;
             fi
           done
-        ) &
+        } &
         SERVER_PID=$!
         [[ ${Fiction[mode]} =~ dev || ${Fiction[hot_reload]} = true ]] && _hotreload &
+        HOTRELOAD_PID=$!
         while read line; do
           case "$line" in
             exit|quit|q|stop) exit ;; 
@@ -935,55 +859,56 @@ function fiction.server() {
     nc | netcat | ncat | socat)
       _buildWorker
       echo -n "Server address: ";
-      if "${Fiction[https]:=false}"; then
-        [[ "${Fiction[bind_port]}" = 443 ]] && \
-          echo -n "https://${Fiction[bind_address]}" || \
-          echo -n "https://${Fiction[bind_address]}:${Fiction[bind_port]}";
+      if "${Fiction[ssl.enabled]:=false}"; then
+        [[ "${Fiction[port]}" = 443 ]] && \
+          echo -n "https://${Fiction[address]}" || \
+          echo -n "https://${Fiction[address]}:${Fiction[port]}";
       else
-        [[ "${Fiction[bind_port]}" = 80 ]] && \
-          echo -n "http://${Fiction[bind_address]}" || \
-          echo -n "http://${Fiction[bind_address]}:${Fiction[bind_port]}";
+        [[ "${Fiction[port]}" = 80 ]] && \
+          echo -n "http://${Fiction[address]}" || \
+          echo -n "http://${Fiction[address]}:${Fiction[port]}";
       fi
       echo " (${FICTION_MODE:-${Fiction[mode]}} mode)";
       case "${Fiction[core]:-socat}" in
       socat)
-        which socat >/dev/null || { error "cannot find socat binary" && return 1; }
-        if "${Fiction[https]:=false}"; then
+        which socat >/dev/null || { _error "cannot find socat binary" && return 1; }
+        if "${Fiction[ssl.enabled]:=false}"; then
           ( 
-            exec -a "fiction" socat openssl-listen:"${Fiction[bind_port]}",bind="${Fiction[bind_address]}",verify=0,${Fiction[ssl_cert]:+cert="${Fiction[ssl_cert]}",}${Fiction[ssl_key]:+key="${Fiction[ssl_key]}",}reuseaddr,fork SYSTEM:"$serverTmpDir/job.sh";
+            exec -a "fiction" socat openssl-listen:"${Fiction[port]}",bind="${Fiction[address]}",verify=0,${Fiction[ssl.cert]:+cert="${Fiction[ssl.cert]}",}${Fiction[ssl.key]:+key="${Fiction[ssl.key]}",}reuseaddr,fork SYSTEM:"$serverTmpDir/job.sh";
           ) &
         else
-          echo " (${FICTION_MODE:-${Fiction[mode]}} mode)";
-          ( exec -a "fiction" socat TCP-LISTEN:${Fiction[bind_port]},bind="${Fiction[bind_address]}",reuseaddr,fork EXEC:''"$serverTmpDir"'/worker.sh'; ) &
+          ( exec -a "fiction" socat TCP-LISTEN:${Fiction[port]},bind="${Fiction[address]}",reuseaddr,fork EXEC:"$serverTmpDir/worker.sh"; ) &
         fi
       ;;
       ncat)
-        which ncat >/dev/null || { error "cannot find ncat binary" && return 1; }
-        if "${Fiction[https]:=false}"; then
+        which ncat >/dev/null || { _error "cannot find ncat binary" && return 1; }
+        if "${Fiction[ssl.enabled]:=false}"; then
           ( 
-            exec -a "fiction" ncat -klp "${Fiction[bind_port]}" -c "$serverTmpDir/worker.sh" --ssl ${Fiction[ssl_cert]:+--ssl-cert "${Fiction[ssl_cert]}"} ${Fiction[ssl_key]:+--ssl-key "${Fiction[ssl_key]}"}; 
+            exec -a "fiction" ncat -klp "${Fiction[port]}" -c "$serverTmpDir/worker.sh" --ssl ${Fiction[ssl.cert]:+--ssl-cert "${Fiction[ssl.cert]}"} ${Fiction[ssl.key]:+--ssl-key "${Fiction[ssl.key]}"}; 
           ) &
         else
-          ( exec -a "fiction" ncat -klp "${Fiction[bind_port]}" -c "$serverTmpDir/worker.sh"; ) &
+          ( exec -a "fiction" ncat -klp "${Fiction[port]}" -c "$serverTmpDir/worker.sh"; ) &
         fi
       ;;
       nc | netcat)
         nc --version 2> 1 > /dev/null && nc_path="nc.traditional" || nc_path="nc";
-        which "$nc_path" >/dev/null || { error "cannot find netcat binary" && return 1; }
-        if "${Fiction[https]:=false}"; then
-          error "HTTPS is not supported in legacy netcat mode" 1>&2
+        which "$nc_path" >/dev/null || { _error "cannot find netcat binary" && return 1; }
+        if "${Fiction[ssl.enabled]:=false}"; then
+          _error "HTTPS is not supported in legacy netcat mode" 1>&2
         else
           (
             while true; do
-              exec -a "fiction" $nc_path -vklp "${Fiction[bind_port]}" -e "$serverTmpDir/worker.sh";
+              exec -a "fiction" $nc_path -vklp "${Fiction[port]}" -e "$serverTmpDir/worker.sh";
               (($? != 0)) && break
             done
           ) &
+
         fi
       ;;
       esac
       SERVER_PID=$!
-      [[ ${Fiction[mode]} =~ dev || ${Fiction[hot_reload]} = true ]] && _hotreload >&2 &
+      [[ ${Fiction[mode]} == development || ${Fiction[hot_reload.enabled]} = true ]] && _hotreload >&2 &
+      HOTRELOAD_PID=$!
       while read line; do
         case "$line" in
           exit|quit|q|stop) exit ;; 
@@ -997,26 +922,40 @@ function fiction.server() {
 
 _hotreload() {
   FICTION_HOTRELOAD=true
-  warn "Hot-Reload enabled. This is an experimental feature, use it with caution."
+  FICTION_NESTED=true
+  local __files=()
   local file
+  for file in ${Fiction[hot_reload.files]//@a }; do
+    local _value="${Fiction[hot_reload.files.$file]}"
+    [[ "${value::1}" != '/' ]] && _value="${FICTION_PATH}${_value}"
+    [[ "$_value" == *' '* ]] && __files+=("'$_value'") || __files+=("$_value")
+  done
+
+  _warn "Hot-Reload enabled. This is an experimental feature, use it with caution."
+
   if which inotifywait >/dev/null 2>&1; then
     i=0
-    inotifywait -qm --event modify --format '%w' ${Fiction[hot_reload_files]} | while read -r file; do
+    inotifywait -qm --event modify --format '%w' ${__files[@]} | while read -r file; do
       ((i == 1)) && i=0 && continue  
       [[ ! "$file" =~ \.shx|\.bashx ]] && { source "$file" && printf "%s\n" "[$_green✓$_nc] Reloaded $file" || printf "%s\n" "[${_red}x${_nc}] Failed to reload $file"; } || BASHX_VERBOSE=true @import "$file"; 
-      [[ ${Fiction[core]} != bash ]] && _buildWorker
-      i=1
+      if [[ ${Fiction[core]} != bash ]]; then
+        _buildWorker
+      else
+        _buildWorker true
+        i=1
+      fi
     done
   else
-    warn "inotify-tools package is not installed, Hot-Reload will use md5sum to compare files every 2s"
-    declare -A _files=()
-    for file in ${Fiction[hot_reload_files]}; do
+    _warn "inotify-tools package is not installed, Hot-Reload will use md5sum to compare files every ${Fiction[hot_reload_interval]:=2}s"
+    local -A _files=()
+    for file in "${__files[@]}"; do
       subshell _var md5sum "$file"
       _files["$file"]="$_var";
       unset _var
     done
-    while sleep 2; do
-      for file in ${Fiction[hot_reload_files]}; do
+
+    while sleep ${Fiction[hot_reload.interval]}; do
+      for file in "${__files[@]}"; do
         subshell file2 md5sum "$file"
         [[ "$file2" == "${_files["$file"]}" ]] && continue
         printf "%s\n" "(hot-reload) Reloading $file..."
@@ -1027,6 +966,7 @@ _hotreload() {
     done
   fi
 }
+
 
 _build() {
   echo "Initializing build..."
@@ -1058,7 +998,7 @@ _build() {
 }
 
 _buildWorker() {
-  { 
+  (
     echo "#!/bin/bash"
     echo "FICTION_PATH='$FICTION_PATH'"
     declare -A
@@ -1066,7 +1006,7 @@ _buildWorker() {
     [[ "${FictionModule[bashx]}" ]] && unset -f @import bashx mktmpDir @render_type @wrapper _render _conditionalRender
     declare | \
       grep -vE '(^DBUS_SESSION_BUS_ADDRESS|^WAYLAND_|^FUNCNAME|^LANG|^ICEAUTHORITY*|^MEMORY_PRESSURE*|^LS_COLORS*|^HOST*|^WASMER*|^Fiction.*=|^chunk=|^newblock=|^out1=|^GPG|^SHELL|^SESSION_|^OS|^KDE_*|^GTK*|^XDG*|^XKB*|^PAM*|^KONSOLE*|^SSH_*|^QT_*|^PWD|^OLDPWD|^TERM|^HOME|^USER|^PATH|^BASH_*|^BASHOPTS|^EUID|^PPID|^SHELLOPTS|^UID)'
-      cat <<EOF
+      [[ -z "$1" ]] && cat <<EOF
 HEADERS=""
 while read -r val; do
   val="\${val//$'\r'/}"
@@ -1079,48 +1019,72 @@ done
 $([[ "$workerargs" ]] && echo 'set $workerargs')
 parseAndPrint <<<"\$HEADERS"
 EOF
-  } >"$serverTmpDir/worker.sh";
+  ) >"$serverTmpDir/worker.sh";
   chmod +x "$serverTmpDir/worker.sh";
 }
 
 _modulesLoader() {
-  for file in $FICTION_PATH/modules/*; do
-    case "${file##*/}" in
+  [[ "$1" ]] && local modules=("$@") || local modules=($FICTION_PATH/modules/*)
+  local dir
+  for dir in "${modules[@]}"; do
+    case "${dir##*/}" in
       accept)
         [[ -v __modules[accept] ]] && continue
-        FictionModule[accept]="$file"
+        FictionModule[accept]="$dir"
       ;;
       ui)
         [[ -v __modules[ui] ]] && continue
-        if [[ -f "$file/index.sh" ]]; then
-          FictionModule[ui]="$file"
-          source "$file/index.sh"
+        if [[ -f "$dir/index.sh" ]]; then
+          FictionModule[ui]="$dir"
+          source "$dir/index.sh"
         else 
-          error "cannot find UI module ($file/index.sh)"
+          _error "cannot find UI module ($dir/index.sh)"
         fi
       ;;
       bashx)
         [[ -v FictionModule[bashx] ]] && continue
-        if [[ -f "$file/bashx" ]]; then
-          FictionModule[bashx]="$file/bashx"
+        if [[ -f "$dir/bashx" ]]; then
+          FictionModule[bashx]="$dir/bashx"
           [[ "${Fiction[mode]}" =~ dev ]] && BASHX_VERBOSE=true
           BASHX_NESTED=true 
-          source "$file/bashx"
+          source "$dir/bashx"
         else
-          error "cannot find bashx ($file/bashx)"
+          _error "cannot find bashx ($dir/bashx)"
         fi
       ;;
       bash-wasm)
         [[ -v FictionModule[wasm] ]] && continue
-        if [[ -f "$file/index.sh" ]]; then
-          FictionModule[wasm]="$file"
-          source "$file/index.sh"
+        if [[ -f "$dir/index.sh" ]]; then
+          FictionModule[wasm]="$dir"
+          source "$dir/index.sh"
         else
-          error "cannot find WASM module ($file/index.sh)"
+          _error "cannot find WASM module ($dir/index.sh)"
+        fi
+      ;;
+      *) 
+        _warn "External module: ${dir##*/}. Trying to load index.sh by default"
+        if [[ -f "$dir/index.sh" ]]; then
+          FictionModule["${dir##*/}"]="$dir"
+          source "$dir/index.sh"
+        else
+          _error "cannot find $dir/index.sh; ignoring"
         fi
       ;;
     esac
   done
+}
+
+_configParser() {
+  if [[ ! -f "$FICTION_PATH/config.json" || ! -s "$FICTION_PATH/config.json" ]]; then
+    _error "$FICTION_PATH/config.json is not found or empty"
+    exit 1
+  else
+    local config="$(cat "$FICTION_PATH/config.json")"
+    json_trim "$config" true true
+    [[ $? > 0 ]] && _error "failed to validate the configuration" && exit 1
+  fi
+  json_to_arr "$json_trim_output" Fiction "" "" "" true
+  Fiction[default_index]="${FICTION_PATH}pages/${Fiction[default_index]:=index.shx}"
 }
 
 _helpmsg() {
@@ -1128,8 +1092,8 @@ _helpmsg() {
 Usage: $0 [action] [arguments]
 
 Available actions:
-  run   [file?]           Start the production server using <file> (src/index.shx default)
-  dev   [file?]           Start the development server using <file> (src/index.shx default)
+  run   [file?]           Start the production server using <file> (pages/index.shx default)
+  dev   [file?]           Start the development server using <file> (pages/index.shx default)
   build [file?] [target?] Build the routes defined in <file> into <target> directory (fiction_compiled default)
   version                 Return server version
   help                    Show this message
@@ -1139,8 +1103,8 @@ EOF
 clean() {
   echo -e "\nStopping the server..."
   [[ -n "$serverTmpDir" && -d "$serverTmpDir" ]] && rm -rf "$serverTmpDir"
-  [[ "$SERVER_PID" ]] && kill "$SERVER_PID" 2>/dev/null
-  #kill -$$
+  [[ "$SERVER_PID" ]] && kill $SERVER_PID 2>/dev/null
+  [[ "$HOTRELOAD_PID" ]] && kill $((HOTRELOAD_PID+2)) $((HOTRELOAD_PID+3)) 2>/dev/null
   exit
 }
 
@@ -1151,15 +1115,28 @@ declare_objects() {
   [[ ${Fiction[request]} != FictionRequest ]] && unset FictionRequest && declare -gn FictionRequest="${Fiction[requests]}"
 }
 
+#_modulesLoader /home/tirito/fiction/framework/modules/shelljq
+#_configParser
+#exit
 if ! (return 0 2>/dev/null); then
   case "$1" in
   run|dev)
     _modulesLoader
+    _configParser
     [[ "$2" ]] && Fiction[default_index]="$2"
-    [[ "$1" == dev ]] && FICTION_MODE=development || FICTION_MODE=production
+    [[ "$1" == dev ]] && Fiction[mode]=development || Fiction[mode]=production
     BASHX_VERBOSE=true
     FICTION_NESTED=true
+    for plugin in ${Fiction[plugins@v]//\'}; do
+      echo "$plugin"
+      case "$plugin" in
+        "tailwindcss") FictionResponse[head]+='<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>' ;;
+        "lucide-icons") FictionResponse[head]+='<script src="https://unpkg.com/lucide@latest"></script>' ;;
+        "dom") subshell _dom_contents cat "$dom_path"; FictionResponse[head]+="<script>${_dom_contents}</script>" ;;
+      esac
+    done
     bashx "${Fiction[default_index]}"
+    fiction.server
   ;;
   build) _modulesLoader; _build && exit ;;
   version)
@@ -1170,7 +1147,7 @@ EOF
   ;;
   help) _helpmsg ;;
   *)
-    error "Invalid action: $1"
+    _error "Invalid action: $1"
     _helpmsg >&2
     exit 1
   ;;
