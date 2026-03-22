@@ -2,7 +2,6 @@
     "core": "socat",
     "address": "0.0.0.0",
     "port": 8080,
-    "default_index": "index.shx",
     "ssl": {
         "enabled": false,
         "key": "",
@@ -10,7 +9,7 @@
     },
     "encode_routes": false,
     "logs": {
-        "show_addr": false,
+        "show_addr": true,
         "show_ua": false,
         "show_headers": false
     },

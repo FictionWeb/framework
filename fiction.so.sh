@@ -68,7 +68,7 @@ declare -a __funcs;
 # - rename_fn
 # - parsePost
 # - fiction.router
-# - parseAndPrint
+# - fiction.processHTTP
 # - fiction.addServerAction
 # - fiction.addMeta
 # - fiction.header.set
@@ -101,6 +101,10 @@ function subshell() {
 #  return
   ${@:2} >"/dev/shm/.fiction_out"
   read -r -d $'\0' $var <"/dev/shm/.fiction_out"
+}
+
+function _read_file() {
+  read -r -d $'\0' "$1" <"$2"
 }
 
 subshell _green tput setaf 2
@@ -273,8 +277,6 @@ json_to_arr() {
 
 # --- end of bash2json ----
 
-#declare -a FictionDynamicRoute
-#declare -A FictionRouteContentType
 # https://github.com/dylanaraps/pure-bash-bible#decode-a-percent-encoded-string
 urldecode() {
   : "${1//+/ }"
@@ -335,29 +337,6 @@ rename_fn() {
   unset -f "$1";
 }
 
-
-
-parsePost() {
-  if [[ "${FictionRequest[method]}" =~ "POST"|"PATCH"|"PUT" ]] && ((${FictionRequestHeaders['content-length']:=0} > 0)); then
-  local entry
-  if [[ "${FictionRequestHeaders["content-type"]}" == "application/x-www-form-urlencoded" ]]; then
-    IFS='&' read -rN "${FictionRequestHeaders["content-length"]}" -a data
-    for entry in "${data[@]}"; do
-    entry="${entry%%$'\r'}"
-    POST["${entry%%=*}"]="${entry#*:}"
-    done
-  elif [[ "${FictionRequestHeaders["content-type"]}" == "application/json" ]]; then
-    read -N "${FictionRequestHeaders["content-length"]}" data
-    json_to_arr "${data%%$'\r'}" POST "" true
-    eval $json_to_arr_output
-  else
-    read -rN "${FictionRequestHeaders["content-length"]}" data
-    POST["raw"]="${data%%$'\r'}"
-  fi
-  unset entry
-  fi
-}
-
 function fiction.router() {
   [[ "${FictionRequest[path]}" =~ ".."|"~" ]] && handled_by="fiction.404" && fiction.404
   [ "${FictionRequest[path]::2}" == "//" ] && FictionRequest[path]="${FictionRequest[path]:1}";
@@ -390,7 +369,7 @@ function fiction.router() {
         $func;
         )
       else
-        parsePost
+        #parsePost
         [[ "$func" == 'echo' ]] && $func "${funcargs//\"/\\\"}" || $func ${funcargs};
       fi
     else
@@ -418,7 +397,7 @@ function fiction.router() {
   fi
 }
 
-function parseAndPrint() {
+function fiction.processHTTP() {
   subshell time1 date +%s%3N
   local REQUEST_METHOD REQUEST_PATH HTTP_VERSION entry key value
   read -r REQUEST_METHOD REQUEST_PATH HTTP_VERSION
@@ -430,6 +409,7 @@ function parseAndPrint() {
     [path]="$REQUEST_PATH"
     [version]="$HTTP_VERSION"
     [addr]="$REMOTE_ADDR"
+    [headers]="FictionRequestHeaders"
   )
   local line _h
   while read -r line; do
@@ -443,16 +423,26 @@ function parseAndPrint() {
   subshell get urldecode "$get"
   IFS='#' read -r REQUEST_PATH _ <<<"$REQUEST_PATH"
   IFS='&' read -ra data <<<"$get"
-  for entry in "${data[@]}"; do
-    FictionRequestQuery["${entry%%=*}"]="${entry#*=}"
-  done
-  IFS=';' read -ra cookie <<<"${FictionRequestHeaders["cookie"]}"
-  [ -n "${FictionRequestHeaders["Cookie"]}" ] && ((${#cookie[@]} < 1 )) && cookie+=( ${FictionRequestHeaders["cookie"]//;} )
-  for entry in ${cookie[@]}; do
-    IFS='=' read -r key value <<<"$entry"
-    [[ "$key" ]] && FictionRequestCookie["$key"]="${value}"
-  done
+  if [[ ${#data[@]} > 0 ]]; then
+    FictionRequest[query]="FictionRequestQuery"
+    for entry in "${data[@]}"; do
+      FictionRequestQuery["${entry%%=*}"]="${entry#*=}"
+    done
+  fi
+
+  if [ -n "${FictionRequestHeaders["Cookie"]}" ]; then
+    IFS=';' read -ra cookie <<<"${FictionRequestHeaders["cookie"]}"
+    FictionRequest[cookie]="FictionRequestCookie"
+    ((${#cookie[@]} < 1 )) 
+    cookie+=( ${FictionRequestHeaders["cookie"]//;} )
+    for entry in ${cookie[@]}; do
+      IFS='=' read -r key value <<<"$entry"
+      [[ "$key" ]] && FictionRequestCookie["$key"]="${value}"
+    done
+  fi
+  
   if [[ "${FictionRequest[method]}" == "POST" ]] && ((${FictionRequestHeaders['content-length']:=0} > 0)); then
+    FictionRequest[data]="FictionRequestData"
     local entry
     if [[ "${FictionRequestHeaders["content-type"]}" == "application/x-www-form-urlencoded" ]]; then
       IFS='&' read -rN "${FictionRequestHeaders["content-length"]}" -a data
@@ -461,9 +451,9 @@ function parseAndPrint() {
         FictionRequestData["${entry%%=*}"]="${entry#*:}"
       done
     elif [[ "${FictionRequestHeaders["content-type"]}" == "application/json" ]]; then
-      read -N "${FictionRequestHeaders["content-length"]}" data
-      json_to_arr "${data%%$'\r'}" FictionRequestData "" true
-      eval "$json_to_arr_output"
+      read -N "${FictionRequestHeaders["content-length"]}" post_data
+      json_trim "${post_data%%$'\r'}" true true
+      json_to_arr "$json_trim_output" FictionRequestData "" true
     else
       read -rN "${FictionRequestHeaders["content-length"]}" data
       FictionRequestData["raw"]="${data%%$'\r'}"
@@ -476,34 +466,37 @@ function parseAndPrint() {
   local routetype="$type"
 
   if [[ -z "$filetype" || "$filetype" == "auto" ]]; then
-    local _ char type
-    subshell type file --mime "$filename"
-    IFS=' ' read _ type char <<<"$type"
-    which file 2>&1 >/dev/null && FictionResponseHeaders["content-type"]="${type//;/}"
-    unset _ type char
+    if which file 2>&1 >/dev/null; then
+      local _ char type
+      subshell type file --mime "$filename"
+      IFS=' ' read _ type char <<<"$type"
+      FictionResponseHeaders["content-type"]="${type//;/}"
+      unset _ type char
+    else
+      FictionResponseHeaders["conten-type"]="application/octet-stream"
+    fi
   else
     FictionResponseHeaders["content-type"]="${filetype}"
   fi
 
-  if [[ "${FictionResponseHeaders["content-type"]}" =~ html && "$routetype" != cgi ]]; then
-    local isdoctype=false ishtml=false isbody=false iscbody=false ishead=false ischtml=false ischead=false
+  if [[ "${FictionResponseHeaders["content-type"]}" == text/html && "$routetype" != cgi ]]; then
     local output
-    subshell output cat "$filename"
+    _read_file output "$filename"
     if [[ "${output::6}" != '<html>' && "${output::15}" != '<!DOCTYPE html>' ]]; then
-    {
-      cat << EOF 
-<!DOCTYPE html>
-<html>
-  <head>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  ${FictionResponse[head]}$FICTION_META
-  </head>
+      {
+        cat <<- EOF 
+          <!DOCTYPE html>
+          <html>
+            <head>
+              <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                ${FictionResponse[head]}$FICTION_META
+            </head>
 EOF
-    [[ "${output::5}" == "<body" ]] && echo "$output" || echo "<body>$output</body>";
-    [[ "${Fiction[plugins@v]}" =~ "lucide-icons" ]] && echo '<script>lucide.createIcons();</script>'
-    echo "</html>";
-  } > "$filename";
-  fi
+        [[ "${output::5}" == "<body" ]] && echo "$output" || echo "<body>$output</body>";
+        [[ "${Fiction[plugins@v]}" =~ "lucide-icons" ]] && echo '<script>lucide.createIcons();</script>'
+        echo "</html>";
+      } > "$filename";
+    fi
   fi
   subshell filesize wc -c "$filename"
   read size filename <<<"$filesize"
@@ -544,23 +537,30 @@ EOF
     *) status="${FictionResponse[status]}"
   esac
   builtin printf -v timestamp "%(%d/%m/%y %H:%M:%S)T"
-  if [[ ${Fiction[mode]} =~ dev ]]; then
+  if [[ ${Fiction[mode]} == development ]]; then
     cat << EOF >&2
 ${_gray}${timestamp}${_nc} ${FictionRequest[version]} ${FictionRequest[method]} ${FictionRequest[path]} $status in $time ($size)
 Handled by: $handled_by
 EOF
-[[ "${Fiction[logs.show_addr]}" = true ]] && echo "Address: ${FictionRequestHeaders[x-forwarded-for]:=${FictionRequest[addr]}}" >&2
+    [[ "${Fiction[logs.show_addr]}" = true ]] && printf "%s\n" "Address: ${FictionRequestHeaders[x-forwarded-for]:=${FictionRequest[addr]}}" >&2
 
-    if [[ "${Fiction[logs.show_headers]}" = true ]]; then
-      echo "Headers: " >&2
+    if "${Fiction[logs.show_headers]:=false}"; then
+      printf "%s\n" "Headers: " >&2
       for key in ${!FictionRequestHeaders[@]}; do 
-        echo "${_bold}$key:${_nc} ${FictionRequestHeaders[$key]}" >&2;
+        printf "%s\n" "${_bold}$key:${_nc} ${FictionRequestHeaders[$key]}" >&2;
       done
+    elif "${Fiction[logs.show_ua]:=false}"; then
+        printf "%s\n" "Headers: " >&2
     fi
   else
-    echo "${_gray}${timestamp}${_nc} ${Fiction[logs.show_addr]:+$REMOTE_ADDR} ${FictionRequest[method]} ${FictionRequest[path]} $status $time" >&2
+    { 
+      printf "%s" "${_gray}${timestamp}${_nc} "
+      "${Fiction[logs.show_addr]:=false}" && printf "%s" "$REMOTE_ADDR"
+      printf "%s\n" " ${FictionRequest[method]} ${FictionRequest[path]} $status $time"
+    }  >&2
   fi
   unset status handled_by routetype size time
+  exit
 }
 
 # HelperFns
@@ -661,7 +661,7 @@ fiction.500() {
   fiction.header.set "server" "Fiction/${Fiction[version]//v}"
   fiction.respond 500 <<- EOF
   <!DOCTYPE html>
-   <html style="font-family: ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';background-color:black;color:white;">
+	<html style="font-family: ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';background-color:black;color:white;">
     <meta>
       <title>Server _error - Fiction</title>
     </meta>
@@ -804,6 +804,8 @@ function fiction.serveDir() {
 
 
 function fiction.server() {
+	[[ "$FICTION_SERVER" ]] && { _error "another instance of fiction.server is already running"; return 1; }
+	FICTION_SERVER=true
   [[ -v Fiction[mode] ]] || Fiction[mode]="production"
   if [[ -z "${FictionRoute['/favicon.ico']}" ]]; then 
     declare -A _hh=([cache-control]="public,max-age=86400" [age]=0)
@@ -841,7 +843,7 @@ function fiction.server() {
           while true; do
             accept -b "${Fiction[address]}" -r REMOTE_ADDR "${Fiction[port]}";
             if [[ -n "$ACCEPT_FD" ]]; then
-              parseAndPrint <&${ACCEPT_FD} >&${ACCEPT_FD};
+              fiction.processHTTP <&${ACCEPT_FD} >&${ACCEPT_FD};
               exec {ACCEPT_FD}>&-;
             fi
           done
@@ -911,7 +913,7 @@ function fiction.server() {
       HOTRELOAD_PID=$!
       while read line; do
         case "$line" in
-          exit|quit|q|stop) exit ;; 
+          exit|quit|q|stop) exit ;;
         esac
       done
     ;;
@@ -977,7 +979,20 @@ _build() {
   BASHX_VERBOSE=true
   FICTION_NESTED=true
   FICTION_BUILD=true
-  bashx "${Fiction[default_index]}"
+  for plugin in ${Fiction[plugins@v]//\'}; do
+      case "$plugin" in
+        "tailwindcss") FictionResponse[head]+='<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>' ;;
+        "lucide-icons") FictionResponse[head]+='<script src="https://unpkg.com/lucide@latest"></script>' ;;
+        "dom") subshell _dom_contents cat "$dom_path"; FictionResponse[head]+="<script>${_dom_contents}</script>" ;;
+      esac
+    done
+    for file in "${FICTION_PATH}"pages/*; do
+      if [[ "$file" == *.shx ]]; then 
+        [[ -v FictionModule[bashx] ]] && bashx "$file" || { _error "cannot load bashx file without bashx module"; exit 1; }
+      else
+        source "$file"
+      fi
+  done
   [[ $? > 0 ]] && exit
   while read route; do
     read type filetype route func <<< "$route";
@@ -1017,7 +1032,7 @@ done
 [[ "\${value// }" -gt 1 ]] && { read -rn \${value// } -t1 data; [[ \${#data} > 1 ]] && HEADERS+="\${data//$'\r'/}"$'\n'; unset key value data; }
 [[ "\$NCAT_REMOTE_ADDR" ]] && REMOTE_ADDR="\$NCAT_REMOTE_ADDR" || REMOTE_ADDR="\$FICTION_PEERADDR"
 $([[ "$workerargs" ]] && echo 'set $workerargs')
-parseAndPrint <<<"\$HEADERS"
+fiction.processHTTP <<<"\$HEADERS"
 EOF
   ) >"$serverTmpDir/worker.sh";
   chmod +x "$serverTmpDir/worker.sh";
@@ -1032,7 +1047,7 @@ _modulesLoader() {
         [[ -v __modules[accept] ]] && continue
         FictionModule[accept]="$dir"
       ;;
-      ui)
+      test_ui)
         [[ -v __modules[ui] ]] && continue
         if [[ -f "$dir/index.sh" ]]; then
           FictionModule[ui]="$dir"
@@ -1045,7 +1060,7 @@ _modulesLoader() {
         [[ -v FictionModule[bashx] ]] && continue
         if [[ -f "$dir/bashx" ]]; then
           FictionModule[bashx]="$dir/bashx"
-          [[ "${Fiction[mode]}" =~ dev ]] && BASHX_VERBOSE=true
+          [[ "${Fiction[mode]}" == development ]] && BASHX_VERBOSE=true
           BASHX_NESTED=true 
           source "$dir/bashx"
         else
@@ -1056,6 +1071,15 @@ _modulesLoader() {
         [[ -v FictionModule[wasm] ]] && continue
         if [[ -f "$dir/index.sh" ]]; then
           FictionModule[wasm]="$dir"
+          source "$dir/index.sh"
+        else
+          _error "cannot find WASM module ($dir/index.sh)"
+        fi
+      ;;
+      shelljq)
+        [[ -v FictionModule[shelljq] ]] && continue
+        if [[ -f "$dir/index.sh" ]]; then
+          FictionModule[shelljq]="$dir"
           source "$dir/index.sh"
         else
           _error "cannot find WASM module ($dir/index.sh)"
@@ -1075,11 +1099,13 @@ _modulesLoader() {
 }
 
 _configParser() {
+	[[ -v FictionModule[shelljq] ]] || { _error "shelljq module is not loaded, cannot proceed"; exit 1; }
   if [[ ! -f "$FICTION_PATH/config.json" || ! -s "$FICTION_PATH/config.json" ]]; then
     _error "$FICTION_PATH/config.json is not found or empty"
     exit 1
   else
-    local config="$(cat "$FICTION_PATH/config.json")"
+    local config
+		_read_file config "$FICTION_PATH/config.json"
     json_trim "$config" true true
     [[ $? > 0 ]] && _error "failed to validate the configuration" && exit 1
   fi
@@ -1128,21 +1154,29 @@ if ! (return 0 2>/dev/null); then
     BASHX_VERBOSE=true
     FICTION_NESTED=true
     for plugin in ${Fiction[plugins@v]//\'}; do
-      echo "$plugin"
       case "$plugin" in
         "tailwindcss") FictionResponse[head]+='<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>' ;;
         "lucide-icons") FictionResponse[head]+='<script src="https://unpkg.com/lucide@latest"></script>' ;;
         "dom") subshell _dom_contents cat "$dom_path"; FictionResponse[head]+="<script>${_dom_contents}</script>" ;;
       esac
     done
-    bashx "${Fiction[default_index]}"
+    for file in "${FICTION_PATH}"pages/*; do
+      if [[ "$file" == *.shx ]]; then 
+        [[ -v FictionModule[bashx] ]] && bashx "$file" || { _error "cannot load bashx file without bashx module"; exit 1; }
+      else
+        source "$file"
+      fi
+    done
     fiction.server
   ;;
-  build) _modulesLoader; _build && exit ;;
+  build) 
+    _modulesLoader
+    _configParser
+   _build && exit ;;
   version)
-    cat << EOF
-Fiction ${Fiction[version]}
-Copyright (C) Tirito6626, notnulldaemon 2025
+    cat <<- EOF
+			Fiction ${Fiction[version]}
+			Copyright (C) Tirito6626, notnulldaemon 2025-2026
 EOF
   ;;
   help) _helpmsg ;;
