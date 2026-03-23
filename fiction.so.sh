@@ -721,7 +721,7 @@ function fiction.serve() {
     ou+=$'\n'"$type ${3:-auto} $route $funcname"
     __e "$ou" "$serverTmpDir/.routes"
   fi
-  echo "[${_white}+${_nc}] Added ${type} route: from ${_bold}'$1'${_nc} to ${_bold}'$2'${_nc} ${3:+as '$3'}"
+  "${FICTION_BUILD:-false}" || echo "[${_white}+${_nc}] Added ${type} route: from ${_bold}'$1'${_nc} to ${_bold}'$2'${_nc} ${3:+as '$3'}"
 }
 
 function fiction.serveDynamic() {
@@ -1005,6 +1005,25 @@ _build() {
     pid=$!
     s='-\|/'; i=0; while kill -0 $pid 2>/dev/null; do i=$(((i+1)%4)); printf "\r[${s:$i:1}] $route\r"; sleep .1; done
     wait $pid
+    if [[ "$filetype" == text/html && "$type" != cgi ]]; then
+        local output
+        _read_file output "$path/$type.html"
+        if [[ "${output::6}" != '<html>' && "${output::15}" != '<!DOCTYPE html>' ]]; then
+          {
+            cat <<- EOF 
+          <!DOCTYPE html>
+          <html>
+            <head>
+              <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                ${FictionResponse[head]}$FICTION_META
+            </head>
+EOF
+            [[ "${output::5}" == "<body" ]] && echo "$output" || echo "<body>$output</body>";
+            [[ "${Fiction[plugins@v]}" =~ "lucide-icons" ]] && echo '<script>lucide.createIcons();</script>'
+            echo "</html>";
+          } > "$path/$type.html";
+        fi
+    fi
     exit=$?
     [[ $exit == 0 ]] && [ -f "$path/$type.html" ] && echo "[$_green✓$_nc] $route (${path%%\/}/${type}.html)" ||  echo "[${_red}x${_nc}] $route ($exit)"
   done < <(__d "$serverTmpDir/.routes")
