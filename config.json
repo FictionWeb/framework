@@ -19,7 +19,6 @@
         "interval": 2
     },
     "plugins": [
-        "lucide-icons",
         "tailwindcss"
     ]
 }
