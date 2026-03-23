@@ -70,6 +70,7 @@ projects="<a href='https://docs.tirito.de'>bash2json</a>, <a href="https://ficti
 }
 
 }
-fiction.serve "/" silly text/html
+
 declare -A _hh=([cache-control]="public,max-age=86400" [age]=0)
-fiction.serveFile "$FICTION_PATH/assets/kcalb.webp" "" "" "_hh"
+fiction.serveFile "$FICTION_PATH/assets/kcalb.webp" "/assets/kcalb.webp" "" "" "_hh"
+fiction.serve "/" silly text/html

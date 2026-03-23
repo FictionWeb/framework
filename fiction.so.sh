@@ -705,9 +705,6 @@ function fiction.serve() {
   [[ -z "$1" || -z "$2" ]] && return 1
   mktmpDir
   local type="${4:-static}"
-  if [[ "${Fiction[mode]}" == build ]]; then
-    [[ "$3" == text/html ]] || return
-  fi
   [[ "${FictionRoute["$1"]}" ]] && _error "Dublicate of existing route $1" && return 1 || FictionRoute["$1"]="$3"
   [[ $type == cgi ]] && [ ! -x "$2" ] && _error "$2 is not an executable. Check if the file exists and has executable permission" && return 1
   funcname="$2";
@@ -996,8 +993,14 @@ _build() {
   [[ $? > 0 ]] && exit
   while read route; do
     read type filetype route func <<< "$route";
-    [[ "$type" == "file" ]] && continue
     echo -ne "(-) $route...\r"
+    if [[ "$type" == "file" ]]; then
+      path="${default_dir:=fiction_compiled}${route}"
+      mkdir -p "${path%/*}"
+      "$func" > "$path"
+      echo "[$_green✓$_nc] $route ($path)"
+      continue
+    fi
     path="${default_dir:=fiction_compiled}$route"
     [[ "$route" ]] && mkdir -p "$path"
     read func funcargs <<< "$func";
