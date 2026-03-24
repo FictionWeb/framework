@@ -1,7 +1,7 @@
 function Column() {
     @parse "$@"
     @return html {
-        <div class="inline-flex">
+        <div class="inline-flex max-w-screen text-wrap">
             <span class="ef247"><span class="bold">$title</span></span>
             <p>: $text</p>
         </div>
@@ -27,12 +27,12 @@ projects="<a href='https://docs.tirito.de'>bash2json</a>, <a href="https://ficti
             }
         </style>
     </head>
-    <body class="w-screen h-screen text-white bg-black flex">
-        <div class="container border rounded-xl border-gray-900 w-200 *:ml-1 m-auto p-1.5">
+    <body class="w-screen h-dvh text-white bg-black flex-col">
+        <div class="container max-md:text-sm border rounded-xl border-gray-900 max-md:w-screen md:w-200 max-md:mx-1 *:ml-1 m-auto p-1.5">
             <pre class="mt-2">tirito@linuxkernelpanic $ webfetch</pre>
-            <div class="grid grid-cols-2 h-82">
-                <img src="/assets/kcalb.webp" />
-                <pre class="-ml-16 flex-col *:inline-flex w-128">
+            <div class="grid max-md:grid-cols-1 grid-cols-2 max-md:text-sm max-md:h-full md:h-82">
+                <img src="/assets/kcalb.webp" class="max-md:mb-2" />
+                <pre class="md:-ml-16 flex-col *:max-md:inline-flex max-w-screen md:w-128">
                     <pre class="inline-flex">
                         <pre class="ef247">tirito</pre>
                         <a>@</a>
@@ -54,7 +54,7 @@ projects="<a href='https://docs.tirito.de'>bash2json</a>, <a href="https://ficti
                 </pre>
             </div>
             <pre>tirito@linuxkernelpanic $ ls</pre>
-            <pre class="inline-flex *:mr-4 mb-2">
+            <pre class="md:inline-flex *:mr-4 mb-2">
                 <a href="https://docs.tirito.de">'All projects'</a>
                 <a href="https://github.com/Tirito6626">GitHub</a>
                 <a href="https://discord.gg/5arB9qAWh4">Wispbyte</a>
@@ -62,7 +62,7 @@ projects="<a href='https://docs.tirito.de'>bash2json</a>, <a href="https://ficti
                 <a href="https://discord.gg/jkCqA5VfMy">onSilly</a>
             </pre>
         </div>
-        <footer class="text-gray-800 text-center absolute bottom-4 left-1/2 transform -translate-x-1/2 -translate-y-1/2">
+        <footer class="text-gray-800 mt-4 md:absolute max-md:mx-3 bottom-2 text-center left-1/2 md:transform md:-translate-x-1/2 md:-translate-y-1/2">
             made with :love: by _tirito_, generated using Fiction at $(LANG=C date), hosted on GitHub Pages
         </footer>
     </body>
@@ -70,7 +70,9 @@ projects="<a href='https://docs.tirito.de'>bash2json</a>, <a href="https://ficti
 }
 
 }
-
+fiction.serve "/" silly text/html
 declare -A _hh=([cache-control]="public,max-age=86400" [age]=0)
 fiction.serveFile "$FICTION_PATH/assets/kcalb.webp" "/assets/kcalb.webp" "" "" "_hh"
-fiction.serve "/" silly text/html
+
+
+
