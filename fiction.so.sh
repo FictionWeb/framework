@@ -668,7 +668,7 @@ function fiction.worker() {
 		*) status="${FictionResponse[status]}"
 	esac
 	builtin printf -v timestamp "%(%d/%m/%y %H:%M:%S)T"
-	if [[ ${Fiction[mode]} == development ]]; then
+	if [[ ${FICTION_MODE} == development ]]; then
 		cat << EOF >&2
 ${_gray}${timestamp}${_nc} ${FictionRequest[version]} ${FictionRequest[method]} ${FictionRequest[path]} $status in $time ($size)
 Handled by: $handled_by
@@ -766,7 +766,7 @@ function fiction() {
 	printf "%s" "running as: "
 	(( is_sourced )) && printf "%s (called from: %s)\n" "module" "${BASH_SOURCE[-1]}" || printf "%s (path: %s)\n" "standalone" "${FICTION_PATH}/fiction.so.sh"
 	echo "PID: $$"
-	echo "mode: ${Fiction[mode]}"
+	echo "mode: ${FICTION_MODE}"
 	echo "hot reload: ${Fiction[hot_reload.enabled]}"
 	echo "loaded modules:" 
 	for key in ${!FictionModule[@]}; do
@@ -926,7 +926,7 @@ function fiction.server() {
 
 	[[ "$FICTION_SERVER" ]] && { _error "another instance of fiction.server is already running"; return 1; }
 	FICTION_SERVER=true
-	[[ -v Fiction[mode] ]] || Fiction[mode]="production"
+	[[ -v FICTION_MODE ]] || FICTION_MODE="production"
 	#if [[ -z "${FictionRoute['/favicon.ico']}" && -f "${FICTION_PATH}favicon.ico" ]]; then 
 	#	declare -A _hh=([cache-control]="public,max-age=86400" [age]=0)
 	#	fiction.serveFile "${FICTION_PATH}favicon.ico" "/favicon.ico" "" "_hh" >/dev/null
@@ -942,7 +942,7 @@ function fiction.server() {
 			[[ "$port" = 80 ]] && \
 					echo -n "http://$address" || \
 					echo -n "http://$address:$port";
-			echo " (${FICTION_MODE:-${Fiction[mode]}} mode)";
+			echo " (${FICTION_MODE:-${FICTION_MODE}} mode)";
 			trap catch_job SIGCHLD
 			echo 0 > "$serverTmpDir/.conns"
 			_spawn 'network listener'
@@ -963,7 +963,7 @@ function fiction.server() {
 					echo -n "http://$address" || \
 					echo -n "http://$address:$port";
 			fi
-			echo " (${FICTION_MODE:-${Fiction[mode]}} mode)";
+			echo " (${FICTION_MODE:-${FICTION_MODE}} mode)";
 			trap catch_job SIGCHLD
 			echo 0 > "$serverTmpDir/.conns"
 			_spawn 'network listener'
@@ -973,7 +973,7 @@ function fiction.server() {
 			local time2="$ms"
 			echo "Ready in $((time2-init_time))ms"
 
-			#if [[ ${Fiction[mode]} == development || ${Fiction[hot_reload.enabled]} = true ]]; then 
+			#if [[ ${FICTION_MODE} == development || ${Fiction[hot_reload.enabled]} = true ]]; then 
 			#	_spawn 'hot-reload'
 			#fi
 			_console
@@ -1041,7 +1041,7 @@ _build() {
 	echo "Initializing build..."
 	time_ms
 	local time="$ms"
-	Fiction[mode]=build
+	FICTION_MODE=build
 	[[ "$2" ]] && Fiction[default_index]="$2"
 	[[ "$3" ]] && target_dir="$3"
 	BASHX_VERBOSE=true
@@ -1154,7 +1154,7 @@ _modulesLoader() {
 				[[ -v FictionModule[bashx] ]] && continue
 				if [[ -f "$dir/bashx" ]]; then
 					FictionModule[bashx]="$dir/bashx"
-					[[ "${Fiction[mode]}" == development ]] && BASHX_VERBOSE=true
+					[[ "${FICTION_MODE}" == development ]] && BASHX_VERBOSE=true
 					BASHX_NESTED=true 
 					source "$dir/bashx"
 				else
@@ -1244,7 +1244,7 @@ if ! (return 0 2>/dev/null); then
 		_mktmpDir
 		time_ms
 		_modulesLoader
-		[[ "$1" == dev ]] && Fiction[mode]=development || Fiction[mode]=production
+		[[ "$1" == dev ]] && FICTION_MODE=development || FICTION_MODE=production
 		[[ "$2" ]] && Fiction[default_index]="$2"
 		_configParser
 		_pluginsLoader
@@ -1282,7 +1282,7 @@ else
 	[[ "$FICTION_HOTRELOAD" ]] || _modulesLoader
 	_configParser
 	if [[ "$FICTION_NESTED" != true ]]; then
-		if [[ "${Fiction[mode]}" == build ]]; then 
+		if [[ "${FICTION_MODE}" == build ]]; then 
 			_build
 			exit
 		fi
