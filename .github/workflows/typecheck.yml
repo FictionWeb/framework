@@ -1,0 +1,61 @@
+# Simple workflow for deploying static content to GitHub Pages
+name: Bash typecheck
+
+on:
+  # Runs on pushes targeting the default branch
+  push:
+    branches: ["main"]
+
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+# Allow only one concurrent deployment, skipping runs queued between the run in-progress and latest queued.
+# However, do NOT cancel in-progress runs as we want to allow these production deployments to complete.
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  main:
+    name: Check main file
+    runs-on: debian-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        bash_docker_image:
+          - "bash:latest"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Check 
+        working-directory: .
+        run: |
+          bash -n fiction.so.sh build
+          cd fiction_compiled && mv static.html index.html
+      - name: Upload pages artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-output
+          path: fiction_compiled/
+  pages:
+    needs: main
+    name: Check example page
+    runs-on: debian-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        bash_docker_image:
+          - "bash:latest"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Check 
+        working-directory: .
+        run: |
+          bash modules/bashx/bashx pages/index.shx test_artifact.sh
+          bash -n test_artifact.sh
+      - name: Upload pages artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-output
+          path: fiction_compiled/
