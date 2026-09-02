@@ -19,12 +19,14 @@ if [[ "$ZSH_VERSION" ]]; then
 	int_regex='^[-+]?[0-9]+\.?$'
 	num_regex='\[(-?[0-9])\]'
 	[[ $ZSH_EVAL_CONTEXT =~ :file$ ]] && sourced=true || sourced=false
+	eval "unset_parent() { parent[-1]=(); }; unset_parent_index() { parent[-1]=(); index[-1]=(); };"
 else
 	is_zsh=false
 	int_regex='^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?$|^-?\.[0-9]+([eE][+-]?[0-9]+)?$'
 	num_regex='\[(-?[0-9])\]'
 	shopt -s extglob
 	(return 0 2>/dev/null) && sourced=true || sourced=false
+	eval "unset_parent() { unset 'parent[-1]';  }; unset_parent_index() { unset 'parent[-1]' 'index[-1]';  };"
 fi
 
 
@@ -61,7 +63,7 @@ json_trim() {
     	for (( i=0; i<${#1}; i++ )); do
 			char="${1:$i:1}"
       		if ! "$isvalue" && [ ! -z "$value" ]; then 
-        		[[ "$value" =~ $int_regex ]] || case "$value" in
+        		[ "$value" -eq "$value" ] 2>/dev/null || case "$value" in
           			true|false|null) : ;;
           			*) [[ "${value:0:1}" == '"' && "${value: -1}" == '"' ]] || { error "invalid key value \`$value\`"; code=1; return 1; }  ;;
         		esac 
@@ -226,7 +228,7 @@ parse_array() {
 		fi
 		value="${value%% }"
 		json_to_arr_array[${parent}@v]+="'$value' "
-		"$pretty" && \
+		is_true "$pretty" && \
 		case "${value::1}" in 
 			'"')  value="${_green}${value}${_nc}"  ;;
 			'{'|'[') : ;;
@@ -343,23 +345,30 @@ arr_to_json() {
 read_until() {
 	local e line="$2" char delim
 	for (( e=1; e<${#line}; e++ )); do
-    	char=${line:$e:1}
-		[[ "$1" == *"$char"* ]] && break
+    	char="${line:$e:1}"
+		case "$1" in *"$char"*)  break ;; esac
 	done
 	chars="${line::$e}"
 }
 
+is_true() {
+	case "$1" in
+		true) return 0 ;;
+		*) return 1 ;;
+	esac
+}
+
 json_pretty() {
-  json_pretty_output=""
-  local depth=0 newstring='' firstchar='' iskey=1 escaped=false brackets=0 space='' char1='' i=0
-  local IFS=$'\n'
-  for line in "$1"; do
+  	json_pretty_output=""
+  	local depth=0 newstring='' firstchar='' iskey=1 escaped=false brackets=0 space='' char1='' i=0
+  	local IFS=$'\n'
+  	for line in "$1"; do
 		[[ "${1::1}" == '"' ]] && ((iskey ^= 1))
         for (( i=0; i<${#line}; i++ )); do
     		char=${line:$i:1}
-            "$escaped" && newstring+="$char" && escaped=false && continue
-            [[ "$char" == ' ' || "$char" == $'\n' ]] && continue
-            case "$char" in 
+            is_true "$escaped" && newstring+="$char" && escaped=false && continue
+            case "$char" in
+				' '|$'\n') continue ;; 
               	',') newstring+=$',\n'"$space"; iskey=1 ;;
               	'"') read_until '"' "${line:$i}"; (( i=i+${#chars} )); ((iskey == 0 || brackets == 1)) && newstring+="${_green}${chars}\"${_nc}" || newstring+="${_nc}${chars}\"${_nc}" ;;
                 '\') escaped=true ;;
@@ -387,7 +396,7 @@ json_pretty() {
 					fi
 					;;
 				't'|'f'|'n') 
-					if [[ "${line:$i:4}" == 'true' ]]; then
+					if is_true "${line:$i:4}"; then
 						newstring+=$'\e[38;2;84;150;210m'"true${_nc}"
 						(( i=i+3 ))
 					elif [[ "${line:$i:5}" == 'false' ]]; then
@@ -425,18 +434,50 @@ json_pretty() {
   return 0
 }
 
+function profiler {
+	snap="${EPOCHREALTIME//./}"
+	#snap="${snap::-3}"
+	printf "\e[1F%s μs\e[1E        %s\n" "$((snap - snap1))" "$BASH_COMMAND"
+	snap1="$snap"
+}
 
+key_to_arr() {
+	local key="$1" arr_name="$2" raw="${3:-false}" src_arr="$4"
+	[[ "$src_arr" ]] && declare -n json_to_arr_array="$src_arr"
+	#declare -p "$arr_name" 2>&1 >/dev/null || return 1 
+	#declare -n _arr="$arr_name"
+	if [[ "$key" == *'.'* ]]; then
+		key="${key%%\.}"
+		read parent key <<< "$key"
+	fi
+	case "${json_to_arr_array[$key]::2}" in
+		'@a')
+			parse_array "$key" "$parent"
+			parsed_array="${parsed_array//\"$key\":\[}"
+			json_to_arr "${parsed_array::-1}" "$arr_name"
+			;;
+		'@A')
+			parse_object "$key" "$parent"
+			parsed_object="${parsed_object//\"$key\":\{}"
+			json_to_arr "${parsed_object::-1}" "$arr_name"
+			;;
+		'') return 1 ;;
+	esac
+
+}
 
 json_to_arr() {
+	#trap profiler DEBUG
 	### json_to_arr <input> <arrname?> <prefix?> <sub?> <as_arr?> <raw?>
 	json_to_arr_output=''
   	local ifs="$IFS"
   	local IFS="."
   	local parent=() 
 	local json="$1" arrname="$2" prefix="$3" sub="${4:-false}" as_arr="${5:-true}" raw="${6:-false}"
-	local line is_array=false parent1 parent_prefix="${prefix}" append_key key value depth result 
+	local line is_array=false parent1 parent_prefix="${prefix}" append_key key value depth result curr_index
 	
-	! "$is_zsh" && [[ "$arrname" ]] && declare -n json_to_arr_array="$arrname" || declare -gA json_to_arr_array=()
+	! is_true "$is_zsh" && [[ "$arrname" ]] && declare -gn json_to_arr_array="$arrname" || declare -gA json_to_arr_array=()
+	
 	local -ai index
 	#local -a json_keys
   	[[ '{[' == *"${json::1}"* ]] || { error "expected '{' or '[', got '${json::1}' instead"; return 1; }
@@ -455,7 +496,7 @@ json_to_arr() {
 
 	json="${json:1:-1}"
 	json="${json%%\}}"
-	"$is_zsh" && IFS=',' read -r -A json_keys <<< "$json," || IFS=',' read -r -a json_keys <<< "$json,"
+	is_true "$is_zsh" && IFS=',' read -r -A json_keys <<< "$json," || IFS=',' read -r -a json_keys <<< "$json,"
 
 	for line in "${json_keys[@]}"; do
 		[[ "${line::1}" ]] || continue
@@ -466,78 +507,51 @@ json_to_arr() {
 		key="${key%% }"
 		parent_prefix="${prefix:+$prefix.}${parent[*]:+${parent[*]}.}"
 		#echo "$key $value $parent_prefix ${index[@]}"
+		#echo "$key $value"
 		if [ -z "$value" ]; then
-			"$raw" && key="${key//\"}"
-				# all possible matches IF inside parent AND the value is empty (means it's array):
-				# key = ']' 
-				# 	- add all subkeys to parent array
-				#	- lower depth and unset last parent key
-				#
-				# key = '{'
-				#	- add current array index to parent list
-				#   - add current array index with empty value to result
-				#
-				# key = '}'
-				# 	- add all subkeys to parent object
-				#	- lower depth and unset last parent key
-				#	- increment index
-				#
-				# key = '"value"... ]'
-				#	- add "value" to parent keys array
-				#	- lower depth and unset last parent key
-				#	- unset last index key
-				# key = ...
-				# 	- add key `$index` to array with `$key` as value
-				#	- add key `$index` to parent array keys list
-				#	- increment index
-				#
-				# if there is no parent array/object:
-				# key = ...
-				# 	- if key is a string and doesn't have `"` at the end, it's set as `$append_key` variable
-				#   - if `$append_key` isn't empty, append existing key until it reaches second `"` 
+			is_true "$raw" && key="${key//\"}"
+			[[ ${#index[@]} > 0 ]] && curr_index="${index[-1]}"
             if [[ ${#parent[@]} > 0 ]]; then
 				case "$key" in
 				']')
-                    ! "$is_zsh" && unset 'parent[-1]' 'index[-1]' || { parent[-1]=(); index[-1]=(); }
+                    unset_parent_index;
 					json_to_arr_array[${parent_prefix%%\.}@v]="${json_to_arr_array[${parent_prefix%%\.}@v]%% }"
 					;;
-				.*']')
-					json_to_arr_array[${parent_prefix}${index[-1]}]="${key%%]}"
-					json_to_arr_array[${parent_prefix}-1]="${key%%]}"
-                    json_to_arr_array[${parent_prefix%%\.}]+=" ${index[-1]}"
-                 	! "$is_zsh" && unset 'parent[-1]' 'index[-1]' || { parent[-1]=(); index[-1]=(); } 
-					json_to_arr_array[${parent_prefix%%\.}@v]+="'${key%%]}'"
-					#((index[-1]++))
-					;;
+				#.*']')
+				#	json_to_arr_array[${parent_prefix}${curr_index}]="${key%%]}"
+				#	json_to_arr_array[${parent_prefix}-1]="${key%%]}"
+                #   json_to_arr_array[${parent_prefix%%\.}]+=" ${curr_index}"
+                #	unset_parent_index;
+				#	json_to_arr_array[${parent_prefix%%\.}@v]+="'${key%%]}'"
+				#	;;
                 '{')
-					[[ ${#parent[@]} > 0 ]] && json_to_arr_array[${parent_prefix%%\.}]+=" ${index[-1]}"
-					parent+=("${index[-1]}")
-                    json_to_arr_array[${parent_prefix}${index[-1]}]="@A"
+					json_to_arr_array[${parent_prefix%%\.}]+=" ${curr_index}"
+					parent+=("${curr_index}")
+                    json_to_arr_array[${parent_prefix}${curr_index}]="@A"
 					;;
 				'}')
-                    ! "$is_zsh" && unset 'parent[-1]' || parent[-1]=();
+                    unset_parent;
 					[[ ${#index[@]} > 0 ]] && ((index[-1]++))
 					;;
 				*)
-					json_to_arr_array[${parent_prefix}${index[-1]}]="$key"
-                    json_to_arr_array[${parent_prefix%%\.}]+=" ${index[-1]}"
+					json_to_arr_array[${parent_prefix}${curr_index}]="$key"
+                    json_to_arr_array[${parent_prefix%%\.}]+=" ${curr_index}"
 					json_to_arr_array[${parent_prefix%%\.}@v]+="'${key}' "
-                   [[ ${#index[@]} > 0 ]] && ((index[-1]++))
+                   	[[ ${#index[@]} > 0 ]] && ((index[-1]++))
 				esac
             elif [[ "$key" == '{' ]]; then
 					parent+=("${index[-1]}")
-					json_to_arr_array[${parent_prefix}${index[-1]}]="@A"
-					#((index[-1]++))
+					json_to_arr_array[${parent_prefix}${curr_index}]="@A"
 			else
-                if "$is_array"; then
+                if is_true "$is_array"; then
 					if [[ "$append_key" ]]; then
 						json_to_arr_array[$append_key]+=",$key"
 						[[ "${key}" == *'"'* ]] && unset append_key && ((index[-1]++))
 					elif [[ "${key::1}" == '"' && "${key: -1}" != '"' ]]; then
-						json_to_arr_array[${parent_prefix}${index[-1]}]="$key"
-						append_key="${parent_prefix}${index[-1]}"
+						json_to_arr_array[${parent_prefix}${curr_index}]="$key"
+						append_key="${parent_prefix}${curr_index}"
 					else
-						json_to_arr_array[${parent_prefix}${index[-1]}]="$key"
+						json_to_arr_array[${parent_prefix}${curr_index}]="$key"
 						((index[-1]++))
 					fi
 				else
@@ -556,25 +570,31 @@ json_to_arr() {
             key="${key//\"}"
             case "$value" in
                 '{}'|'[]')  json_to_arr_array[${parent_prefix}${key}]="$value" ;;
-                '{'|'[')
+                '{')
+					json_to_arr_array[${parent_prefix}${key}]="@A"
 					[[ ${#parent[@]} > 0 ]] && json_to_arr_array[${parent_prefix%%\.}]+=" $key"
                     parent+=("$key")
-					[[ "$value" == '{' ]] && json_to_arr_array[${parent_prefix}${key}]="@A" || { json_to_arr_array[${parent_prefix}${key}]="@a"; index+=(0); }
+					;;
+				'[')
+					[[ ${#parent[@]} > 0 ]] && json_to_arr_array[${parent_prefix%%\.}]+=" $key"
+                    parent+=("$key")
+					json_to_arr_array[${parent_prefix}${key}]="@a" 
+					index+=(0)
                     ;;
-                *'}')
-                    value="${value%%\}}"
-                    json_to_arr_array[${parent_prefix}${key}]="${value%% }"
-					json_to_arr_array[${parent_prefix%%\.}]+=" ${key}"
-                    ! "$is_zsh" && unset 'parent[-1]' || parent[-1]=();
-                    ;;
-                *']')
-					value="${value%%\]}"
-                    json_to_arr_array[${parent_prefix}${key}]="${value%% }"
-					json_to_arr_array[${parent_prefix%%\.}]+=" ${key}"
-					json_to_arr_array[${parent_prefix}-1]="${value%% }"
+                #*'}')
+                #    value="${value%%\}}"
+                #    json_to_arr_array[${parent_prefix}${key}]="${value%% }"
+				#	json_to_arr_array[${parent_prefix%%\.}]+=" ${key}"
+                #    unset_parent
+                #    ;;
+                #*']')
+				#	value="${value%%\]}"
+                #    json_to_arr_array[${parent_prefix}${key}]="${value%% }"
+				#	json_to_arr_array[${parent_prefix%%\.}]+=" ${key}"
+				#	json_to_arr_array[${parent_prefix}-1]="${value%% }"
 				#	json_to_arr_array["${parent_prefix}"]="@a${parent_keys[#${parent[@]}]}"
-					! "$is_zsh" && unset 'parent[-1]' 'index[-1]' || { parent[-1]=(); index[-1]=(); }
-                    ;;
+				#	unset_parent_index
+                #    ;;
                 *)
 					case "$value" in
 						'%BRACKETS%') value='[]' ;;
@@ -801,34 +821,6 @@ json_remove() {
 		json_remove_output="$arr_to_json_output"
 	fi
 
-}
-
-is_string() {
-	[[ "${1::1}" = '"' ]] && [[ "${1: -1}" = '"' ]] || return 1
-}
-
-is_int() {
-	[[ "${1::1}" =~ $int_regex ]] || return 1
-}
-
-is_object() {
-	[[ "${1::1}" = '{' ]] && [[ "${1: -1}" = '}' ]] || return 1
-}
-
-is_array() {
-	[[ "${1::1}" = '[' ]] && [[ "${1: -1}" = ']' ]] || return 1
-}
-
-has_key() {
-	[[ "${json_to_arr_array[$key.$1]}" ]] || return 1
-}
-
-key_equals() {
-	[[ "${json_to_arr_array[$key.$1]}" == "$2" ]] || return 1
-}
-
-key_equals_regex() {
-	[[ "${json_to_arr_array[$key.$1]}" =~ $2 ]] || return 1
 }
 
 json_filter() {
