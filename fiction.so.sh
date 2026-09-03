@@ -288,6 +288,15 @@ function _console {
 		case "$line" in
 			exit|quit|q|stop) exit ;;
 			i|info) fiction ;;
+			r|restart)
+				if (( is_sourced )); then
+					_error "restart option is not available in module mode"
+					continue
+				fi
+				restart=true clean
+
+				exec bash "$FICTION_PATH/fiction.so.sh" "$FICTION_MODE"
+				;;
 			s|stats|status)
 				_read_file proc "/proc/$$/status"
 				[[ "$proc" =~ VmRSS:(.*)kB ]] && read rss _ <<< "${BASH_REMATCH[1]}"
@@ -314,16 +323,16 @@ function _console {
 }
 
 clean() {
-	echo -e "\nStopping the server..."
+	[[ "$restart" == true ]] && echo -e "\nRestarting the server..." || echo -e "\nStopping the server..."
 	{
 		[[ -n "$serverTmpDir" && -d "$serverTmpDir" ]] && rm -rf "$serverTmpDir"
 		kill ${!jobs[@]}
 		printf "" > "$FICTION_PATH/fiction.lock"
 		echo "Waiting for all jobs to exit... (${!jobs[@]})"
-		wait ${!jobs[@]}
+		wait "${!jobs[@]}"
 		
 	} 2>/dev/null
-	exit
+	[[ "$restart" == true ]] || exit
 }
 
 function @cache() {
@@ -442,7 +451,9 @@ function fiction.router() {
 					"$host") continue 2 ;;
 				esac
 			done
+			set -x
 			fiction.404;
+			set +x
 			return;
 		done
 	fi
@@ -712,7 +723,8 @@ fiction.respond() {
 		[[ "$__fiction_responded" == 1 ]] && return
 		[[ -z "$1" ]] && _error "At least one argument expected" >&2 && return 1
 		fiction.response_code.set "$1"
-		[[ $1 != 204 && -z "$2" ]] && while read -rd'' chunk; do output+="$chunk"; done || local output="$2"
+		[[ $1 != 204 && -z "$2" ]] && read -rd'' chunk && output+="$chunk" || local output="$2"
+		echo "$output"
 		echo "$output" >"$WORKER_OUT"
 		__fiction_responded=1
 	return
@@ -1217,9 +1229,6 @@ _configParser() {
 	unset json_trim_output
 	Fiction[default_index]="${FICTION_PATH}pages/${Fiction[default_index]:=index.shx}"
 	readonly -A Fiction
-	set -x
-	#[[ "${Fiction[allowed_hostnames]}" != '[]' ]] && declare -gra __allowed_hostnames=(${Fiction["allowed_hostnames@v"]}) || declare -gra __allowed_hostnames=()
-	set +x
 }
 
 _helpmsg() {
@@ -1240,11 +1249,11 @@ EOF
 #exit
 if ! (return 0 2>/dev/null); then
 	case "$1" in
-	run|dev)
+	run|dev|development|production)
 		_mktmpDir
 		time_ms
 		_modulesLoader
-		[[ "$1" == dev ]] && FICTION_MODE=development || FICTION_MODE=production
+		[[ "$1" == dev* ]] && FICTION_MODE=development || FICTION_MODE=production
 		[[ "$2" ]] && Fiction[default_index]="$2"
 		_configParser
 		_pluginsLoader
