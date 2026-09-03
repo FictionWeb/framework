@@ -18,7 +18,7 @@ concurrency:
 jobs:
   main:
     name: Check main file
-    runs-on: debian-latest
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
@@ -40,7 +40,7 @@ jobs:
   pages:
     needs: main
     name: Check example page
-    runs-on: debian-latest
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
