@@ -326,7 +326,7 @@ clean() {
 	[[ "$restart" == true ]] && echo -e "\nRestarting the server..." || echo -e "\nStopping the server..."
 	{
 		[[ -n "$serverTmpDir" && -d "$serverTmpDir" ]] && rm -rf "$serverTmpDir"
-		kill ${!jobs[@]}
+		kill "${!jobs[@]}"
 		printf "" > "$FICTION_PATH/fiction.lock"
 		echo "Waiting for all jobs to exit... (${!jobs[@]})"
 		wait "${!jobs[@]}"
@@ -721,6 +721,7 @@ function fiction.cookie.set() {
 fiction.respond() {
 	local output;
 		[[ "$__fiction_responded" == 1 ]] && return
+		[[ -z "$WORKER_OUT" ]] && _error "function used outside of worker or doesn't have worker output variable accessible" >&2 && return 1
 		[[ -z "$1" ]] && _error "At least one argument expected" >&2 && return 1
 		fiction.response_code.set "$1"
 		[[ $1 != 204 && -z "$2" ]] && read -rd'' chunk && output+="$chunk" || local output="$2"
@@ -1185,7 +1186,7 @@ _modulesLoader() {
 			shelljq)
 				[[ -v FictionModule[shelljq] ]] && continue
 				if [[ -f "$dir/index.sh" ]]; then
-					FictionModule[shelljq]="$dir"
+					FictionModule[shelljq]="$dir/index.sh"
 					source "$dir/index.sh"
 				else
 					_error "cannot find WASM module ($dir/index.sh)"
@@ -1249,6 +1250,15 @@ EOF
 #exit
 if ! (return 0 2>/dev/null); then
 	case "$1" in
+	module)
+		_modulesLoader
+		module="${FictionModule[$2]}"
+		if [[ -z "$module" ]]; then
+			_error "Invalid module: $2"
+			exit 1
+		fi
+		bash "$module" "${@:3}"
+		;;
 	run|dev|development|production)
 		_mktmpDir
 		time_ms
