@@ -252,6 +252,11 @@ function _render() {
 				output+="${line}"
 			fi
 			;;
+		'{@children}') 
+			_close_heredoc
+			output+=$'{@children}\n'
+			_open_heredoc 
+			;;
 		'{'*'}')
 			output+="$(sed 's|{\([^[:space:]]\+\)}|<a data-bind="\1"></a>|g' <<< "$line")" # "dynamic" variables manageable by setState
 			;;
@@ -392,7 +397,7 @@ function @exclude {
 
 function @require {
   for arg in $@; do 
-    declare -F $arg || echo "Error: required $arg is not found" 
+    declare -F "$arg" || echo "Error: required $arg is not found" 
   done
 }
 
@@ -404,10 +409,12 @@ function @unquote {
 }
 
 function @wrapper() {
-  for key in $@; do 
+	set -x
+  for key in "$@"; do 
     [ -z "$(declare -F "$key")" ] && return
-    eval "$(declare -f "$key" | sed "s+{@children};+}; /${key}() {+g")"
+    eval "$(declare -f "$key" | sed "s+{@children}+}; /${key}() {+g")"
   done
+  set +x
 }
 
 function @render_type() {

@@ -724,8 +724,7 @@ fiction.respond() {
 		[[ -z "$WORKER_OUT" ]] && _error "function used outside of worker or doesn't have worker output variable accessible" >&2 && return 1
 		[[ -z "$1" ]] && _error "At least one argument expected" >&2 && return 1
 		fiction.response_code.set "$1"
-		[[ $1 != 204 && -z "$2" ]] && read -rd'' chunk && output+="$chunk" || local output="$2"
-		echo "$output"
+		[[ $1 != 204 && -z "$2" ]] && while read -r chunk; do output+="$chunk"; done || local output="$2"
 		echo "$output" >"$WORKER_OUT"
 		__fiction_responded=1
 	return
