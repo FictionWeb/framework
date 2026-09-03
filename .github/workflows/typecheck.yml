@@ -18,7 +18,7 @@ concurrency:
 jobs:
   main:
     name: Check main file
-    runs-on: debian-latest
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
@@ -30,8 +30,7 @@ jobs:
       - name: Check 
         working-directory: .
         run: |
-          bash -n fiction.so.sh build
-          cd fiction_compiled && mv static.html index.html
+          bash -n fiction.so.sh
       - name: Upload pages artifact
         uses: actions/upload-artifact@v4
         with:
@@ -40,7 +39,7 @@ jobs:
   pages:
     needs: main
     name: Check example page
-    runs-on: debian-latest
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
