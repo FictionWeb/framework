@@ -30,8 +30,7 @@ jobs:
       - name: Check 
         working-directory: .
         run: |
-          bash -n fiction.so.sh build
-          cd fiction_compiled && mv static.html index.html
+          bash -n fiction.so.sh
       - name: Upload pages artifact
         uses: actions/upload-artifact@v4
         with:
