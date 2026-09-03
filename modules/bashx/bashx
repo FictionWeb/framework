@@ -182,6 +182,7 @@ function _render() {
 							output+="$line"$'\n'
 							;;
 						*)
+						_open_heredoc
         				# check if there are special callbacks
           				case "$line" in
 	          				on:*)
@@ -470,7 +471,7 @@ if ! (return 0 2>/dev/null); then
 #elif [[ -z "$BASHX_NESTED" ]]; then
   BASHX_NESTED=true 
   if [ -z "$1" ]; then
-    @error "Invalid usage. Use $0 [filename]"
+    @error "Invalid usage. Use $0 <filename> [output?]"
     exit 1
   elif [ -f "$1" ]; then
     filename="$1"
