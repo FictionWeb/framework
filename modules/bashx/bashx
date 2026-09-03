@@ -52,7 +52,8 @@ function @error() {
 }
 
 function _open_heredoc() {
-	if (( ! heredoc_open )); then 
+	if (( ! heredoc_open )); then
+		[[ "${output: -1}" != $'\n' ]] && output+=$'\n'
 		output+=$'cat <<- __eof\n'
 		(( heredoc_open ^= 1 ))
 		(( level == 0 )) && level="${saved_level:=2}"
@@ -60,7 +61,8 @@ function _open_heredoc() {
 }
 
 function _close_heredoc() {
-	if (( heredoc_open )); then 
+	if (( heredoc_open )); then
+		[[ "${output: -1}" != $'\n' ]] && output+=$'\n'
 		output+=$'__eof\n'
 		(( heredoc_open ^= 1 ))
 		saved_level="$level"
