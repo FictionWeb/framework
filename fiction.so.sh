@@ -429,7 +429,6 @@ __encode() {
 	case "${FictionRequestHeaders[accept-encoding]}" in
 		*gzip*)
 			FictionResponseHeaders["content-encoding"]="gzip"
-			cat "$1"
 			gzip -n "$1"
 			mv -n "${1}.gz" "$1"
 			;;
@@ -656,7 +655,7 @@ function fiction.worker() {
 			printf '%s %s\n' "HTTP/1.1" "${FictionResponse["status"]}"
 			if [[ "$routetype" != "cgi" ]]; then
 				for key in "${!FictionResponseHeaders[@]}"; do printf '%s: %s\n' "${key,,}" "${FictionResponseHeaders[$key]}"; done
-				for value in "${FictionResponseCookie[@]}"; do printf 'Set-cookie: %s\n' "$value"; done
+				for value in "${FictionResponseCookie[@]}"; do printf 'set-cookie: %s\n' "$value"; done
 				(( ! empty_body )) && printf "\n"
 			fi
 			(( size == 0 || empty_body )) || cat "$filename"
@@ -700,26 +699,32 @@ function fiction.worker() {
 		4[0-9][0-9]|5[0-9][0-9]) local status="${_red}${FictionResponse[status]}${_nc}" ;;
 		*) status="${FictionResponse[status]}"
 	esac
-	builtin printf -v timestamp "%(%d/%m/%y %H:%M:%S)T"
+	[[ "${Fiction[logs.timestamp]}" == true ]] && builtin printf "${_gray}%(%d/%m/%y %H:%M:%S)T${_nc} "
 	if [[ ${FICTION_MODE} == development ]]; then
 		cat << EOF >&2
-${_gray}${timestamp}${_nc} ${FictionRequest[version]} ${FictionRequest[method]} ${FictionRequest[path]} $status in $time ($size)
+$HTTP_VERSION $REQUEST_METHOD $REQUEST_PATH $status in $time ($size)
 Handled by: $handled_by
 EOF
-		[[ "${Fiction[logs.show_addr]:=true}" == true ]] && printf "%s\n" "Address: ${FictionRequestHeaders[x-forwarded-for]:=${FictionRequest[addr]}}"
+		[[ "${Fiction[logs.address]:-true}" == true ]] && printf "%s\n" "Address: ${FictionRequestHeaders[x-forwarded-for]:-${FictionRequest[addr]}}"
 
-		if [[ "${Fiction[logs.show_headers]:=false}" == true ]]; then
+		if [[ "${Fiction[logs.request_headers]:-false}" == true ]]; then
 			printf "%s\n" "Headers: "
 			for key in ${!FictionRequestHeaders[@]}; do 
-				printf "%s\n" "${_bold}$key:${_nc} ${FictionRequestHeaders[$key]}"
+				printf "< ${_bold}%s${_nc}: %s\n" "${key,,}" "${FictionRequestHeaders[$key]}"
 			done
-		elif "${Fiction[logs.show_ua]:=false}"; then
-				printf "%s\n" "Headers: "
+		fi
+		
+		if [[ "${Fiction[logs.response]}" == true ]]; then
+			printf "\n"
+			printf '> %s %s\n' "HTTP/1.1" "$status"
+			for key in "${!FictionResponseHeaders[@]}"; do printf "> ${_bold}%s${_nc}: %s\n" "${key,,}" "${FictionResponseHeaders[$key]}"; done
+			for value in "${FictionResponseCookie[@]}"; do printf '> set-cookie: %s\n' "$value"; done
+			(( ! empty_body )) && printf "\n"
 		fi
 	else
-			printf "%s" "${_gray}${timestamp}${_nc} "
-			"${Fiction[logs.show_addr]:=false}" && printf "%s" "${FictionRequestHeaders[x-forwarded-for]:-${FictionRequest[addr]}}"
-			printf "%s\n" " ${FictionRequest[method]} ${FictionRequest[path]} $status $time"
+			#printf "%s" "${_gray}${timestamp}${_nc} "
+			[[ "${Fiction[logs.address]:-true}" == true ]] && printf "%s" "${FictionRequestHeaders[x-forwarded-for]:-${FictionRequest[addr]}}"
+			printf "%s\n" " $HTTP_VERSION $REQUEST_PATH $status $time"
 	fi
 	unset status handled_by routetype size time
 	#exit
@@ -741,16 +746,18 @@ function fiction.cookie.set() {
 }
 
 fiction.respond() {
-	set -x
 	local output;
-		[[ "$__fiction_responded" == 1 ]] && return
-		[[ -z "$WORKER_OUT" ]] && _error "function used outside of worker or doesn't have worker output variable accessible" >&2 && return 1
-		[[ -z "$1" ]] && _error "At least one argument expected" >&2 && return 1
-		fiction.response_code.set "$1"
-		[[ $1 != 204 && -z "$2" ]] && while read -r chunk; do output+="$chunk"; done || local output="$2"
-		echo "$output" >"$WORKER_OUT"
-		__fiction_responded=1
-	set +x
+	[[ "$__fiction_responded" == 1 ]] && return
+	[[ -z "$WORKER_OUT" ]] && _error "function used outside of worker or doesn't have worker output variable accessible" >&2 && return 1
+	[[ -z "$1" ]] && _error "At least one argument expected" >&2 && return 1
+		
+	fiction.response_code.set "$1"
+	
+	[[ $1 != 204 && -z "$2" ]] && while read -r chunk; do output+="$chunk"; done || local output="$2"
+		
+	echo "$output" >"$WORKER_OUT"
+	
+	__fiction_responded=1
 	return
 }
 

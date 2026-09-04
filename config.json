@@ -12,6 +12,7 @@
         }
     },
     "logs": {
+        "timestamp": true,
         "address": true,
         "request_headers": true,
         "response": true

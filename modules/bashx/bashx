@@ -409,12 +409,10 @@ function @unquote {
 }
 
 function @wrapper() {
-	set -x
   for key in "$@"; do 
     [ -z "$(declare -F "$key")" ] && return
     eval "$(declare -f "$key" | sed "s+{@children}+}; /${key}() {+g")"
   done
-  set +x
 }
 
 function @render_type() {
