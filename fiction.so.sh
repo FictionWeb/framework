@@ -460,7 +460,7 @@ rename_fn() {
 
 function fiction.router() {
 	local allowed_hostnames="${Fiction[server.allowed_hostnames]}"
-	if [[ "$allowed_hostnames" > 3 ]]; then
+	if [[ "${#allowed_hostnames}" > 3 ]]; then
 		local host port key
 		IFS=':' read host port <<< "${FictionRequestHeaders[host]}"
 		[[ -z "$host" ]] && return
@@ -471,9 +471,7 @@ function fiction.router() {
 					"$host") continue 2 ;;
 				esac
 			done
-			set -x
 			fiction.404;
-			set +x
 			return;
 		done
 	fi
