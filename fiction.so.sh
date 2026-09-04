@@ -194,10 +194,11 @@ function catch_job {
 function _spawn {
 	case "$1" in
 	'network listener')
-		local address="${Fiction[address]}" port="${Fiction[port]}"
-		case "${Fiction[core]:-socat}" in
+		local address="${Fiction[server.address]}" port="${Fiction[server.port]}"
+		local ssl_enabled="${Fiction[server.ssl.enabled]:=false}" 
+		case "${Fiction[server.core]:-socat}" in
 			bash)
-				if "${Fiction[ssl.enabled]:=false}"; then
+				if [[ "$ssl_enabled" == true ]]; then
 					_error "HTTPS isn't available in development core. Use ncat or socat for HTTPS server"
 					exit 1
 				else
@@ -226,8 +227,10 @@ function _spawn {
 				;;
 			socat)
 				which socat >/dev/null || { _error "cannot find socat binary" && return 1; }
-				if "${Fiction[ssl.enabled]:=false}"; then
-					exec -a "fiction" socat -T10 openssl-listen:"$port",bind="$address",verify=0,${Fiction[ssl.cert]:+cert="${Fiction[ssl.cert]}",}${Fiction[ssl.key]:+key="${Fiction[ssl.key]}",}reuseaddr,fork SYSTEM:"$serverTmpDir/job.sh" &
+				if [[ "$ssl_enabled" == true ]]; then			
+					local ssl_cert="${Fiction[server.ssl.cert]:+cert=\"${Fiction[server.ssl.cert]}\",}" 
+					local ssl_key="${Fiction[server.ssl.key]:+key=\"${Fiction[server.ssl.key]}\",}"
+					exec -a "fiction" socat -T10 openssl-listen:"$port",bind="$address",verify=0,"${ssl_cert}${ssl_key}"reuseaddr,fork SYSTEM:"$serverTmpDir/job.sh" &
 				else
 					exec -a "fiction" socat -T10 TCP-LISTEN:$port,bind="$address",reuseaddr,fork EXEC:"$serverTmpDir/worker.sh" &
 				fi
@@ -235,8 +238,10 @@ function _spawn {
 			;;
 			ncat)
 				which ncat >/dev/null || { _error "cannot find ncat binary" && return 1; }
-				if "${Fiction[ssl.enabled]:=false}"; then
-					exec -a "fiction" ncat -klp "$port" -c "$serverTmpDir/worker.sh" --ssl ${Fiction[ssl.cert]:+--ssl-cert "${Fiction[ssl.cert]}"} ${Fiction[ssl.key]:+--ssl-key "${Fiction[ssl.key]}"} -w 10 &
+				if [[ "$ssl_enabled" == true ]]; then
+					local ssl_cert="${Fiction[server.ssl.cert]:+--ssl-cert \"${Fiction[server.ssl.cert]}\"}" 
+					local ssl_key="${Fiction[server.ssl.key]:+--ssl-key \"${Fiction[server.ssl.key]}\"}"
+					exec -a "fiction" ncat -klp "$port" -c "$serverTmpDir/worker.sh" --ssl "$ssl_cert" "$ssl_key" -w 10 &
 				else
 					exec -a "fiction" ncat -klp "$port" -c "$serverTmpDir/worker.sh" -w 10 &
 				fi
@@ -245,7 +250,7 @@ function _spawn {
 			nc | netcat)
 				nc --version 2> 1 > /dev/null && nc_path="nc.traditional" || nc_path="nc";
 				which "$nc_path" >/dev/null || { _error "cannot find netcat binary" && return 1; }
-				if "${Fiction[ssl.enabled]:=false}"; then
+				if [[ "$ssl_enabled" == true ]]; then
 					_error "HTTPS is not supported in legacy netcat mode" 1>&2
 				else
 					while true; do
@@ -411,10 +416,25 @@ __htmlhelper() {
 						${FictionResponse[head]}$FICTION_META
 					</head>
 EOF
-				[[ "${output}" == *"<body"* ]] && echo "$output" || echo "<body>$output</body>";
-				[[ "${Fiction[plugins@v]}" =~ "lucide-icons" ]] && echo '<script>lucide.createIcons();</script>'
+		[[ "${output}" == *"<body"* ]] && echo "$output" || echo "<body>$output</body>";
+		[[ "${Fiction[plugins@v]}" == *"lucide-icons"* ]] && echo '<script>lucide.createIcons();</script>'
 		echo "</html>";
+	else
+		echo "$output"
 	fi >"$file"
+}
+
+__encode() {
+	[[ "${Fiction[server.compression]}" == true ]] && \
+	case "${FictionRequestHeaders[accept-encoding]}" in
+		*gzip*)
+			FictionResponseHeaders["content-encoding"]="gzip"
+			cat "$1"
+			gzip -n "$1"
+			mv -n "${1}.gz" "$1"
+			;;
+		*) return ;;
+	esac
 }
 
 # https://github.com/dylanaraps/pure-bash-bible#decode-a-percent-encoded-string
@@ -440,13 +460,14 @@ rename_fn() {
 }
 
 function fiction.router() {
-	if [[ "${#Fiction[allowed_hostnames]}" > 3 ]]; then
+	local allowed_hostnames="${Fiction[server.allowed_hostnames]}"
+	if [[ "$allowed_hostnames" > 3 ]]; then
 		local host port key
 		IFS=':' read host port <<< "${FictionRequestHeaders[host]}"
 		[[ -z "$host" ]] && return
 		for _ in _; do 
-			for key in ${Fiction[allowed_hostnames]:3}; do
-				key="${Fiction[allowed_hostnames.$key]}"
+			for key in ${allowed_hostnames:3}; do
+				key="${Fiction[server.allowed_hostnames.$key]}"
 				case "$key" in
 					"$host") continue 2 ;;
 				esac
@@ -480,7 +501,7 @@ function fiction.router() {
 			REQUEST_PATH="$path" \
 			CONTENT_LENGTH="${FictionRequestHeaders[content-length]}" \
 			SCRIPT_NAME="$func" \
-			HTTPS="${Fiction[ssl.enabled]}" \
+			HTTPS="${Fiction[server.ssl.enabled]}" \
 			SCRIPT_FILENAME="$func" \
 			HTTP_USER_AGENT="${FictionRequestHeaders[user-agent]}" \
 			HTTP_COOKIE="${FictionRequestHeaders[cookie]}" \
@@ -515,7 +536,7 @@ function fiction.worker() {
 	WORKER_FIFO="$1"
 	#trap profiler DEBUG
 	local REQUEST_METHOD REQUEST_PATH HTTP_VERSION entry
-	read -r REQUEST_METHOD REQUEST_PATH HTTP_VERSION
+	read -r REQUEST_METHOD REQUEST_PATH HTTP_VERSION 2>/dev/null || return
 	HTTP_VERSION="${HTTP_VERSION%%$'\r'}"
 	[[ "$HTTP_VERSION" =~ HTTP/[0-9]\.?[0-9]? ]] && HTTP_VERSION="${BASH_REMATCH[0]}" || return
 	[[ -z "$REQUEST_METHOD" || -z "$REQUEST_PATH" ]] && return
@@ -613,20 +634,21 @@ function fiction.worker() {
 			unset 'FictionResponseHeaders[Content-Type]'
 		fi
 
+		case "${FictionResponseHeaders["content-type"]}" in
+			'')
+				if [[ -z "$filetype" || "$filetype" == "auto" ]]; then
+					FictionResponseHeaders["content-type"]="application/octet-stream"
+				else
+					FictionResponseHeaders["content-type"]="${filetype}"
+				fi
+				;;
+			text/html)
+				[[ "$routetype" != cgi ]] && __htmlhelper "$filename"
+		esac
+		__encode "$filename"
 		subshell filesize wc -c "$filename"
 		read size filename <<<"$filesize"
 		FictionResponseHeaders["content-length"]="${size:-0}"
-		case "${FictionResponseHeaders["content-type"]}" in
-		'')
-			if [[ -z "$filetype" || "$filetype" == "auto" ]]; then
-				FictionResponseHeaders["content-type"]="application/octet-stream"
-			else
-				FictionResponseHeaders["content-type"]="${filetype}"
-			fi
-			;;
-		text/html)
-			[[ "$routetype" != cgi ]] && __htmlhelper "$filename"
-		esac
 	fi
 	
 	if [[ "${WORKER_FIFO::1}" == "&" ]]; then
@@ -634,7 +656,7 @@ function fiction.worker() {
 			printf '%s %s\n' "HTTP/1.1" "${FictionResponse["status"]}"
 			if [[ "$routetype" != "cgi" ]]; then
 				for key in "${!FictionResponseHeaders[@]}"; do printf '%s: %s\n' "${key,,}" "${FictionResponseHeaders[$key]}"; done
-				for value in "${FictionResponseCookie[@]}"; do printf 'Set-Cookie: %s\n' "$value"; done
+				for value in "${FictionResponseCookie[@]}"; do printf 'Set-cookie: %s\n' "$value"; done
 				(( ! empty_body )) && printf "\n"
 			fi
 			(( size == 0 || empty_body )) || cat "$filename"
@@ -644,7 +666,7 @@ function fiction.worker() {
 			printf '%s %s\n' "HTTP/1.1" "${FictionResponse["status"]}"
 			if [[ "$routetype" != "cgi" ]]; then
 				for key in "${!FictionResponseHeaders[@]}"; do printf '%s: %s\n' "${key,,}" "${FictionResponseHeaders[$key]}"; done
-				for value in "${FictionResponseCookie[@]}"; do printf 'Set-Cookie: %s\n' "$value"; done
+				for value in "${FictionResponseCookie[@]}"; do printf 'set-cookie: %s\n' "$value"; done
 				(( ! empty_body )) && printf "\n"
 			fi
 			(( size == 0 || empty_body )) || cat "$filename"
@@ -719,6 +741,7 @@ function fiction.cookie.set() {
 }
 
 fiction.respond() {
+	set -x
 	local output;
 		[[ "$__fiction_responded" == 1 ]] && return
 		[[ -z "$WORKER_OUT" ]] && _error "function used outside of worker or doesn't have worker output variable accessible" >&2 && return 1
@@ -727,6 +750,7 @@ fiction.respond() {
 		[[ $1 != 204 && -z "$2" ]] && while read -r chunk; do output+="$chunk"; done || local output="$2"
 		echo "$output" >"$WORKER_OUT"
 		__fiction_responded=1
+	set +x
 	return
 }
 
@@ -918,7 +942,7 @@ function fiction.serveDir() {
 function fiction.server() {
 	[[ "$FICTION_BUILD" || "$FICTION_HOTRELOAD" ]] && return
 
-	local address="${Fiction[address]}" port="${Fiction[port]}"
+	local address="${Fiction[server.address]}" port="${Fiction[server.port]}"
 	if [[ -s "$FICTION_PATH/fiction.lock" ]]; then
 		_read_file pid "$FICTION_PATH/fiction.lock"
 		if [[ -f "/proc/$pid/status" ]]; then
@@ -948,7 +972,7 @@ function fiction.server() {
 	#set -x
 	#[[ "${Fiction[include_wasm]}" == true && "${Fiction[ssl.enabled]:=false}" == false ]] && _error "Running the website with WASM included on HTTP. Modern browsers will not allow WASM initialization from HTTP origin. In case it's a development server, consider using ncat for running a temporary HTTPS server." && return 1
 	trap clean EXIT INT;
-	case "${Fiction[core]}" in
+	case "${Fiction[server.core]}" in
 		bash)
 			echo -n "Server address: ";
 			[[ "$port" = 80 ]] && \
@@ -966,7 +990,7 @@ function fiction.server() {
 		nc | netcat | ncat | socat)
 			_buildWorker
 			echo -n "Server address: ";
-			if "${Fiction[ssl.enabled]:=false}"; then
+			if "${Fiction[server.ssl.enabled]:=false}"; then
 				[[ "$port" = 443 ]] && \
 					echo -n "https://$address" || \
 					echo -n "https://$address:$port";
@@ -991,7 +1015,7 @@ function fiction.server() {
 			_console
 		;;
 		*)
-			_error "Invalid core: ${Fiction[core]}"
+			_error "Invalid core: ${Fiction[server.core]}"
 			exit 1
 	esac
 }
@@ -1239,6 +1263,7 @@ Available actions:
 	run   [file?]           Start the production server using <file> (pages/index.shx default)
 	dev   [file?]           Start the development server using <file> (pages/index.shx default)
 	build [file?] [target?] Build the routes defined in <file> into <target> directory (fiction_compiled default)
+	module [module] [args]  Run indivial module using its absolute path
 	version                 Return server version
 	help                    Show this message
 EOF

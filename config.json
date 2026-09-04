@@ -1,22 +1,25 @@
 {
-    "core": "socat",
-    "address": "0.0.0.0",
-    "port": 8080,
-    "allowed_hostnames": [],
-    "ssl": {
-        "enabled": false,
-        "key": "",
-        "cert": ""
+    "server": {
+        "core": "socat",
+        "address": "0.0.0.0",
+        "port": 8080,
+        "compression": true,
+        "allowed_hostnames": [],
+        "ssl": {
+            "enabled": false,
+            "key": "",
+            "cert": ""
+        }
     },
     "logs": {
-        "show_addr": true,
-        "show_ua": false,
-        "show_headers": false
+        "address": true,
+        "request_headers": true,
+        "response": true
     },
     "body": {
         "application/json": {
             "parse": true,
-            "trim": false,
+            "trim": true,
             "raw": true
         }
     },
