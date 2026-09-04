@@ -1296,6 +1296,7 @@ EOF
 	;;
 	esac
 else
+	[[ "$1" == dev* ]] && FICTION_MODE=development || FICTION_MODE=production
 	_mktmpDir
 	[[ "$FICTION_HOTRELOAD" ]] || _modulesLoader
 	_configParser
