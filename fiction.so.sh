@@ -605,6 +605,8 @@ function fiction.worker() {
 
 	WORKER_OUT="/dev/shm/.fiction_output_$RANDOM"
 	filename="$WORKER_OUT"
+	time_ms
+	FictionRequest[process_time]="$((ms-worker_init_time))"
 	fiction.router
 	if [[ "$__fiction_responded" != 1 ]]; then
 		_error "'$handled_by' provides no response or any 'fiction.respond' trigger, falling back to 500"; 
