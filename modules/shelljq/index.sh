@@ -30,83 +30,131 @@ else
 fi
 
 
-error() {
-  printf '%s\n' "error: $*" >&2
+read_until() {
+	local e line="$2" char delim
+	for (( e=1; e<${#line}; e++ )); do
+    	char="${line:$e:1}"
+		case "$1" in *"$char"*)  break ;; esac
+	done
+	chars="${line::$e}"
 }
+
+is_true() case "$1" in
+	true|1) return 0 ;;
+	false|0) return 1 ;;
+	*) return 1 ;;
+esac
+declare -fr is_true
+
+bool_to_int() {
+	is_true "${!1:-false}"
+	declare -g "$1=$(( ! $? ))"
+}
+
+int_to_bool() {
+	(( "${!1:-0}" > 0 )) && declare -g "$1=true" || declare -g "$1=false" 
+}
+
+
+error() {
+  is_true "${sub:-$2}" && __shjq_error="$1" || printf '%s\n' "error: $1" >&2
+}
+
+
 
 json_trim() {
 	### json_trim <input> <validate?> <sub?>
-
+	#set +x
+	#trap profiler DEBUG
   	local inside_string=0
   	json_trim_output=""
-  	local validate=$2
- 	local sub=$3
-  	local escaped=false
+  	local validate="$2"
+ 	local sub="$3"
+  	local escaped=0
   	local i=0
-  	if ! "${validate:=false}"; then 
+  	if ! is_true "${validate:-false}"; then
 		for (( i=0; i<${#1}; i++ )); do
 			char="${1:$i:1}"
-    		[[ "$char" = '\' ]] && escaped=true
-      		if "$escaped"; then
-         		json_trim_output+="$char" && continue
+      		if (( escaped )); then
+         		json_trim_output+="$char" && escaped=0
       		else
 				case "$char" in
+				'\') escaped=1 ;;
 				'"') ((inside_string ^= 1)) ;;
-				' ')  [[ "$inside_string" = 0 ]] && continue ;;
+				' ')  (( inside_string )) && continue ;;
 				$'\n') continue ;;
         		esac
 		        json_trim_output+="$char"
 	    	fi
 	    done
   	else 
-    	local newstring='' escaped=false depth=0 dquotes=0 bdepth=0 newstring='' i=0 isvalue=false value='' commas=0 firstchar='' quoted=false prevchar='' inside_string=0 unquotedchars='' code=0
-    	for (( i=0; i<${#1}; i++ )); do
-			char="${1:$i:1}"
-      		if ! "$isvalue" && [ ! -z "$value" ]; then 
-        		[ "$value" -eq "$value" ] 2>/dev/null || case "$value" in
-          			true|false|null) : ;;
-          			*) [[ "${value:0:1}" == '"' && "${value: -1}" == '"' ]] || { error "invalid key value \`$value\`"; code=1; return 1; }  ;;
-        		esac 
-        		value=''
-      		fi
-    		if "$escaped"; then
-        		escaped=false
-      		elif ((inside_string != 0)); then 
-        		case "$char" in 
-		        	'"')  ((inside_string ^= 1 && ++dquotes)) 
-		                  "$isvalue" && isvalue=false && value+='"' 
-						;; 
-          			'\') escaped=true 
+    	local newstring=''  newstring='' value='' firstchar='' quoted=false prevchar='' unquotedchars=''
+		local -i i=0 isvalue=0 escaped=0 depth=1 dquotes=0 bdepth=0 commas=0 inside_string=0 code=0 spaces=0
+		char="${1::1}"
+		firstchar="$char"
+		prevchar="$char"
+		newstring+="$char"
+	   # set -x
+		for (( i=1; i<${#1}; i++ )); do
+			char="${1:i:1}"
+
+			#set +x
+      		if (( inside_string )); then
+				#set -x
+        		case "$char" in
+		        	'"')  
+						(( escaped )) && continue
+						((inside_string ^= 1, ++dquotes)) 
+		                (( isvalue )) && isvalue=0 && value+='"' 
+						;;
+          			'\') escaped=1
         		esac
-        		"$isvalue" && value+="$char"
+        		(( isvalue )) && value+="$char"
+			#set +x
+			elif (( escaped )); then
+        		escaped=0
       		else
+				if (( ! isvalue )); then
+					case "$value" in
+          				true|false|null|'"'*'"'|'') : ;;
+          				*)
+							if
+								! [[ "${value:0:1}" == '"' && "${value: -1}" == '"' ]] && \
+							   	! printf "%f" "$value" >/dev/null 2>&1
+							then
+								local __=$(( ${#value} + 10))
+								error "invalid key value \`$value\`"$'\n'"...${1:i-__:$__}..." "$sub"
+								code=1
+								return 1
+							fi  
+							;;
+        			esac
+        			value=''
+      			fi
         		case "$char" in 
-          			$'\n'|' ') continue ;; 
-		          	',')  "$isvalue" && isvalue=false; 
-			              [[ "$prevchar" == ',' ]] && error "unexpected ',,'"
+          			$'\n') continue ;;
+					' ') spaces+=1; continue ;;
+		          	',')  (( isvalue )) && isvalue=0
+			              [[ "$prevchar" == ',' ]] && error "unexpected ',,'" "$sub"
         		esac
-        		if [ -z "$firstchar" ]; then 
-		          	firstchar="$char"
-		          	prevchar="$char"
-	        	fi
         		case "$firstchar" in
 	            	'{'|'[')
               			case "$char" in 
                 			'"') 	
-								((inside_string ^= 1 && ++dquotes))
-                      			"$isvalue" && value+='"'
+								((inside_string ^= 1, ++dquotes))
+                      			(( isvalue )) && value+='"'
                      			[[ '{[,:' != *"$prevchar"* ]] && ((++commas)) 
 								;;
-                			':') isvalue=true ;;
+                			':') ((! inside_string )) && isvalue=1 ;;
                 			'{') 
 								((++depth))
-                     			isvalue=false
+                     			isvalue=0
                      			[[ '"{[,:' != *"$prevchar"* ]] && ((++commas)) 
 								;;
-                			'}') isvalue=false; ((--depth)) ;;
-                			'[') isvalue=false; ((++bdepth)); [[ '"{[,:' != *"$prevchar"* ]] && ((++commas)) ;;
-                			']') isvalue=false; ((--bdepth)) ;;
-                			*) "$isvalue" && value+="$char" ;;
+                			'}') isvalue=0; ((--depth)) ;;
+                			'[') isvalue=1; ((++bdepth)); [[ '"{[,:' != *"$prevchar"* ]] && ((++commas)) ;;
+                			']') isvalue=0; ((--bdepth)) ;;
+                			*) (( isvalue )) && value+="$char" ;;
               			esac 
 			            ;;
             		'"') [[ "$char" == '"' ]] && ((depth ^= 1)) ;;
@@ -119,26 +167,27 @@ json_trim() {
     
 		if (( dquotes % 2 )); then 
       		if (((dquotes-(dquotes-1)) == 1 && depth > 0 )); then 
-        		error 'expected `"` but got `EOF` instead' 
+        		error 'expected `"` but got EOF instead' "$sub"
         		code=1
-        		return 1 
+        		return 1
       		else 
-        		error "missing $missingq \`\"\`"
+        		error "missing $missingq \`\"\`" "$sub"
 	    	    code=1
 	      	fi
     	fi
-
-    	(( depth > 0 )) && error "missing ${depth} \`}\`" && code=1
-    	(( depth < 0 )) && error "missing ${depth//\-} \`{\`" && code=1
-    	(( commas > 0 )) && error "missing ${commas} \`,\`" && code=1
-	    (( bdepth > 0 )) && error "missing ${bdepth} \`]\`" && code=1
-    	(( bdepth < 0 )) && error "missing ${bdepth//-} \`[\`" && code=1
-	    [ ! -z "${unquotedchars//\\n}" ] && error "unquoted characters: $unquotedchars" && code=1
-    	[[ "$code" == 1 ]] && return 1
+		if (( depth+commas+bdepth != 0 )); then
+    		(( depth > 0 )) && error "missing ${depth} \`}\`" 
+    		(( depth < 0 )) && error "missing ${depth//\-} \`$firstchar\`"
+    		(( commas > 0 )) && error "missing ${commas} \`,\`"
+	    	(( bdepth > 0 )) && error "missing ${bdepth} \`]\`"
+    		(( bdepth < 0 )) && error "missing ${bdepth//-} \`[\`"
+			code=1
+		fi
+    	[ ! -z "${unquotedchars//\\n}" ] && error "unquoted characters: $unquotedchars" && code=1
 	    json_trim_output="$newstring"
   	fi
-  	! "${sub:=false}" && echo "$json_trim_output"
-  	return 0
+  	! is_true "${validate:-false}" && echo "$json_trim_output"
+  	return "$code"
 }
 
 nested=0
@@ -256,13 +305,19 @@ parse_array() {
 }
 
 arr_to_json() {
+	### arr_to_json <arr_name> <sub?> <pretty?>
 	json_to_json_output=''
   	local data=''
 	local arrname="$1"
   	local sub="${2:-false}"
 	local pretty="${3:-false}"
 	"$pretty" && space='  '
-	"$is_zsh" && local keys=(${(k)json_to_arr_array[@]}) || local keys=(${!json_to_arr_array[@]})
+	if is_true "$is_zsh"; then 
+		local keys=("${(k)json_to_arr_array[@]}")
+	else 
+		[[ "$arrname" ]] && declare -gn json_to_arr_array="$arrname"
+		local keys=("${!json_to_arr_array[@]}")
+	fi
 	if [[ "${json_to_arr_array[_shjq_arr]}" == 1 ]]; then
 		unset json_to_arr_array[_shjq_arr]
 		for key in "${keys[@]}"; do
@@ -279,19 +334,35 @@ arr_to_json() {
 					fi
             	;;
             	*)
-					"$pretty" && \
+					if is_true "$pretty"; then
 					case "${value::1}" in 
 						'"')  value="${_green}${value}${_nc}"  ;;
 						'{'|'[') : ;;
 						*)
 							case "$value" in
 								true|false) value=$'\e[38;2;84;150;210m'"$value${_nc}" ;;
-								null|'')		value="${_gray}null${_nc}"  ;;
-								*)	[[ "$value" =~ $int_regex ]] || { error "invalid key value: $value (while parsing ${parent}${key})"; return 1; }
-									value="${_yellow}${value}${_nc}"
+								null)	value="${_gray}null${_nc}"  ;;
+								"")    value="${_gray}\"\"${_nc}"  ;;
+								*)
+									if printf "%f" "$value" >/dev/null 2>&1; then 
+										value="${_yellow}${value}${_nc}"
+									else
+										value="${_green}\"${value}\"${_nc}"
+									fi
 									;;
 							esac
 					esac
+					else
+						case "$value" in
+								true|false \
+								| null     \
+								| '{'*'}'  \
+								| '['*']'  \
+								| '"'*'"') : ;;
+								'')  value='""'  ;;
+								*)	! printf "%f" "$value" >/dev/null 2>&1 && value="\"${value}\"" ;;
+						esac
+					fi
         		"$pretty" && data+=$',\n'"${space}${value}" || data+=",${value}"
         	esac
 			"$pretty" && arr_to_json_output="[${data:1:-1}"$'\n]' || arr_to_json_output="[${data:1:-1}]"
@@ -320,19 +391,35 @@ arr_to_json() {
             		fi
 					;;
             	*)
-					"$pretty" && \
+					if is_true "$pretty"; then
 					case "${value::1}" in 
 						'"')  value="${_green}${value}${_nc}"  ;;
 						'{'|'[') : ;;
 						*)
 							case "$value" in
-								true|false)	value=$'\e[38;2;84;150;210m'"$value${_nc}"	;;
-								null|'')		value="${_gray}null${_nc}" ;;
-								*) [[ "$value" =~ $int_regex ]] || { error "invalid key value: $value (while parsing ${parent}${key})"; return 1; }
-									value="${_yellow}${value}${_nc}"
+								true|false) value=$'\e[38;2;84;150;210m'"$value${_nc}" ;;
+								null)	value="${_gray}null${_nc}"  ;;
+								"")    value="${_gray}\"\"${_nc}"  ;;
+								*)
+									if printf "%f" "$value" >/dev/null 2>&1; then 
+										value="${_yellow}${value}${_nc}"
+									else
+										value="${_green}\"${value}\"${_nc}"
+									fi
 									;;
 							esac
 					esac
+					else
+						case "$value" in
+								true|false \
+								| null     \
+								| '{'*'}'  \
+								| '['*']'  \
+								| '"'*'"') : ;;
+								'')  value='""'  ;;
+								*)	! printf "%f" "$value" >/dev/null 2>&1 && value="\"${value}\"" ;;
+						esac
+					fi
         		"$pretty" && data+=$',\n'"${space}\"$key\": $value" || data+=",\"$key\":$value"
         	esac
     	done
@@ -340,22 +427,6 @@ arr_to_json() {
 	fi
   	"$sub" || echo "$arr_to_json_output" 
   	return 0
-}
-
-read_until() {
-	local e line="$2" char delim
-	for (( e=1; e<${#line}; e++ )); do
-    	char="${line:$e:1}"
-		case "$1" in *"$char"*)  break ;; esac
-	done
-	chars="${line::$e}"
-}
-
-is_true() {
-	case "$1" in
-		true) return 0 ;;
-		*) return 1 ;;
-	esac
 }
 
 json_pretty() {
@@ -444,8 +515,6 @@ function profiler {
 key_to_arr() {
 	local key="$1" arr_name="$2" raw="${3:-false}" src_arr="$4"
 	[[ "$src_arr" ]] && declare -n json_to_arr_array="$src_arr"
-	#declare -p "$arr_name" 2>&1 >/dev/null || return 1 
-	#declare -n _arr="$arr_name"
 	if [[ "$key" == *'.'* ]]; then
 		key="${key%%\.}"
 		read parent key <<< "$key"
@@ -517,13 +586,6 @@ json_to_arr() {
                     unset_parent_index;
 					json_to_arr_array[${parent_prefix%%\.}@v]="${json_to_arr_array[${parent_prefix%%\.}@v]%% }"
 					;;
-				#.*']')
-				#	json_to_arr_array[${parent_prefix}${curr_index}]="${key%%]}"
-				#	json_to_arr_array[${parent_prefix}-1]="${key%%]}"
-                #   json_to_arr_array[${parent_prefix%%\.}]+=" ${curr_index}"
-                #	unset_parent_index;
-				#	json_to_arr_array[${parent_prefix%%\.}@v]+="'${key%%]}'"
-				#	;;
                 '{')
 					json_to_arr_array[${parent_prefix%%\.}]+=" ${curr_index}"
 					parent+=("${curr_index}")
@@ -780,7 +842,7 @@ json_remove() {
 	local query="$1"
 	local sub="${2:-false}"
  	local result
-	set -x
+	#set -x
 	if ! "$sub"; then
 		json_to_arr "$3"
 	fi
