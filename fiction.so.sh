@@ -214,7 +214,7 @@ function _spawn {
 	case "$1" in
 	'network listener')
 		local address="${Fiction[server.address]}" port="${Fiction[server.port]}"
-		local ssl_enabled="${Fiction[server.ssl.enabled]:=false}" 
+		local ssl_enabled="${Fiction[server.ssl.enabled]:-false}" 
 		case "${Fiction[server.core]:-socat}" in
 			bash)
 				IFS="$orig_IFS"
