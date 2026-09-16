@@ -327,7 +327,7 @@ function _console {
 				;;
 			s|stats|status)
 				_read_file proc "/proc/$$/status"
-				[[ "$proc" =~ VmRSS:(.*)kB ]] && read rss _ <<< "${BASH_REMATCH[1]}"
+				[[ "$proc" =~ VmRSS:(.*)kB ]] && IFS=' ' read rss _ <<< "${BASH_REMATCH[1]}"
 				if ((rss > 1024)); then
 					builtin printf -v size "%.2f MB" "${rss}e-3"
 				else
@@ -501,7 +501,7 @@ function fiction.router() {
 	ou="${FictionRoute[$path]}"
 	if [[ "$ou" ]]; then
 		IFS='|' read route func type contenttype <<< "$ou";
-		read func funcargs <<< "$func";
+		IFS=' ' read func funcargs <<< "$func";
 		FICTION_ROUTE="$path";
 		handled_by="$func"
 		if [[ "$type" == cgi ]]; then
@@ -532,7 +532,7 @@ function fiction.router() {
 			[[ "${FictionRequest[path]}" =~ $regex ]] || continue
 			local slugs=$(echo "$route" | grep -oP '\[\K[^]]+(?=\])' | tr '\n' ' ' | sed 's/,$//')
 			slugs="${slugs% }" 
-			read _ $slugs <<< "${BASH_REMATCH[@]}"
+			IFS=' ' read _ $slugs <<< "${BASH_REMATCH[@]}"
 			handled_by="$func"
 			$func
 			return
@@ -676,7 +676,7 @@ function fiction.respond() {
 			esac
 			__encode "$filename"
 			subshell filesize wc -c "$filename"
-			read size filename <<<"$filesize"
+			IFS=' ' read size filename <<<"$filesize"
 			[[ "${size:=0}" == 0 ]] && empty_body=1 
 			FictionResponseHeaders[content-length]="${size:-0}"
 		else
@@ -880,7 +880,7 @@ function fiction.serve() {
 	[[ "${FictionRoute["$1"]}" ]] && _error "Dublicate of existing route $1" && return 1
 	route="$1"
 	[[ "${route: -1}" == '/' ]] || route="${route}/"
-	read -r funcname args <<< "$2"
+	IFS=' ' read -r funcname args <<< "$2"
 	case "$type" in 
 		"cgi")
 			if [ ! -x "$2" ]; then 
@@ -1160,7 +1160,7 @@ _build() {
 		fi
 		path="${default_dir:=fiction_compiled}$route"
 		[[ "$route" ]] && mkdir -p "$path"
-		read func funcargs <<< "$func";
+		IFS=' ' read func funcargs <<< "$func";
 		WORKER_OUT="$path/$type.html"
 		${func} ${funcargs//\"/\\\"} & 
 		pid=$!
