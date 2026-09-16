@@ -328,18 +328,17 @@ function _console {
 				exec bash "$FICTION_PATH/fiction.so.sh" "$FICTION_MODE"
 				;;
 			s|stats|status)
-				set -x
 				_read_file proc "/proc/$$/status"
 				#echo "$IFS"
 				#declare -p IFS
 				[[ "$proc" =~ VmRSS:(.*)kB ]] && read rss _ <<< "${BASH_REMATCH[1]}"
-				echo "${BASH_REMATCH[1]} $rss $_"
+				#echo "${BASH_REMATCH[1]} $rss $_"
 				if ((rss > 1024)); then
 					builtin printf -v size "%.2f MB" "${rss}e-3"
 				else
 					builtin printf -v size "%.d KB" "${size}"
 				fi
-				set +x
+				#set +x
 				read conns < "$serverTmpDir/.conns"
 				time_ms
 				local seconds=$(( (ms - init_time) / 1000))

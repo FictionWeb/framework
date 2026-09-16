@@ -626,7 +626,12 @@ json_to_arr() {
 	json="${json//\" :/\":}"
 	json="${json:1:-1}"
 	json="${json%%\}}"
-	is_true "$is_zsh" && IFS=',' read -r -A json_keys <<< "$json," || IFS=',' read -r -a json_keys <<< "${json:1}"
+	if is_true "$is_zsh"; then 
+		IFS=',' read -r -A json_keys <<< "$json,"
+	else 
+		IFS=',' read -r -a json_keys <<< "${json:1}"
+	fi
+	unset IFS
 	arr_len="${#json_keys[@]}"
 	for ((i=0; i<=arr_len; i++)); do
 	# line in "${json_keys[@]}"; do
