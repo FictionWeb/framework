@@ -202,7 +202,7 @@ function _parse_jobs {
 	[ -f "$serverTmpDir/.jobs" ] || return
 	local line='' pid='' name=''
 	while read line; do
-		read pid name <<< "$line"
+		IFS=' ' read pid name <<< "$line"
 		#echo "$pid $name"
 		jobs[$pid]="$name"
 	done <"$serverTmpDir/.jobs"
