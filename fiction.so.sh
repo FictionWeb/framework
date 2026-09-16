@@ -223,12 +223,14 @@ function _spawn {
 					[ ! -f "${FictionModule[accept]}" ] && _error "\`accept\` is not found in ${Fiction[path]}" && return 1;
 					enable -f "${FictionModule[accept]}" accept;
 					while true; do
+						set -x
 						accept -b "$address" -r REMOTE_ADDR "$port";
 						if [[ -n "$ACCEPT_FD" ]]; then
+							read worker < /proc/sys/kernel/random/uuid
 							{
+								set -x
 								ms="${EPOCHREALTIME//[.,]/}"
 								worker_init_time="${ms::-3}"
-								read worker < /proc/sys/kernel/random/uuid
 								fiction.worker "&${ACCEPT_FD}" "$worker" <&${ACCEPT_FD};
 								exec {ACCEPT_FD}>&-;
 								if [[ -f "$serverTmpDir/.conns" ]]; then 
@@ -239,7 +241,6 @@ function _spawn {
 									esac
 								fi
 							} &
-							_add_job $! "worker-$worker"
 						fi
 					done &
 					_add_job $! "$1"
@@ -653,6 +654,7 @@ function fiction.respond() {
 	local headers="${!FictionResponseHeaders[@]}"
 	local routetype="$type"
 	local filetype="$contenttype"
+	FictionResponseHeaders[connection]="close"
 	[[ "$headers" != *"server"* ]] && FictionResponseHeaders[server]="Fiction/${Fiction[version]//v}"
 
 		
