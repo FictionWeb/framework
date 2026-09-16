@@ -329,6 +329,7 @@ function _console {
 				;;
 			s|stats|status)
 				_read_file proc "/proc/$$/status"
+				IFS="$orig_IFS"
 				#echo "$IFS"
 				#declare -p IFS
 				[[ "$proc" =~ VmRSS:(.*)kB ]] && read rss _ <<< "${BASH_REMATCH[1]}"
