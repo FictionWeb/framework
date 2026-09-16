@@ -223,12 +223,12 @@ function _spawn {
 					[ ! -f "${FictionModule[accept]}" ] && _error "\`accept\` is not found in ${Fiction[path]}" && return 1;
 					enable -f "${FictionModule[accept]}" accept;
 					while true; do
-						set -x
+						#set -x
 						accept -b "$address" -r REMOTE_ADDR "$port";
 						if [[ -n "$ACCEPT_FD" ]]; then
 							read worker < /proc/sys/kernel/random/uuid
 							{
-								set -x
+								#set -x
 								ms="${EPOCHREALTIME//[.,]/}"
 								worker_init_time="${ms::-3}"
 								fiction.worker "&${ACCEPT_FD}" "$worker" <&${ACCEPT_FD};
@@ -244,7 +244,7 @@ function _spawn {
 							} &
 						fi
 					done &
-					_add_job $! "$1"
+					_add_job "$!" "$1"
 				fi
 				;;
 			socat)
@@ -279,7 +279,7 @@ function _spawn {
 							exec -a "fiction-listener" $nc_path -vklp "$port" -e "$serverTmpDir/worker.sh";
 							(($? != 0)) && break
 					done &
-					_add_job $! "$1"
+					_add_job "$!" "$1"
 				fi
 			;;
 		esac
@@ -636,7 +636,7 @@ function fiction.respond() {
 	#fiction.response_code.set "$1"
 
 	if [[ $1 != 204 && -z "$2" ]]; then
-		while IFS= read -r chunk; do 
+		while IFS='' read -r chunk; do 
 			#echo "$chunk"; 
 			output+="$chunk"
 		done
@@ -703,10 +703,12 @@ function fiction.worker() {
 	local worker_uuid="$2"
 	BASH_ARGV0="fiction-worker"
 	#trap profiler DEBUG
-	local REQUEST_METHOD REQUEST_PATH HTTP_VERSION entry
-	read -r REQUEST_METHOD REQUEST_PATH HTTP_VERSION || return
-	HTTP_VERSION="${HTTP_VERSION//$'\r'}"
-	[[ "$HTTP_VERSION" =~ HTTP/[0-9]\.?[0-9]? ]] && HTTP_VERSION="${BASH_REMATCH[0]}" || return
+	local REQUEST_METHOD REQUEST_PATH HTTP_VERSION entry init_line
+    read init_line 2>/dev/null || return
+    init_line="${init_line//$'\r'}"
+	[[ "$init_line" =~ HTTP/[0-9]\.?[0-9]? ]] && HTTP_VERSION="${BASH_REMATCH[0]}" || return
+    init_line="${init_line/$HTTP_VERSION}"
+    IFS=' ' read REQUEST_METHOD REQUEST_PATH <<< "$init_line"
 	[[ -z "$REQUEST_METHOD" || -z "$REQUEST_PATH" ]] && return
 	FictionRequest=(
 		[method]="$REQUEST_METHOD"
