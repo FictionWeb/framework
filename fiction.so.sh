@@ -11,6 +11,7 @@ else
 fi
 ms="${EPOCHREALTIME//[.,]}"
 init_time="${ms::-3}"
+orig_IFS="$IFS"
 [[ -v FICTION_META ]] || FICTION_META=""
 _green=$'\e[38;5;2m'
 _red=$'\e[38;5;1m'
@@ -216,6 +217,7 @@ function _spawn {
 		local ssl_enabled="${Fiction[server.ssl.enabled]:=false}" 
 		case "${Fiction[server.core]:-socat}" in
 			bash)
+				IFS="$orig_IFS"
 				if [[ "$ssl_enabled" == true ]]; then
 					_error "HTTPS isn't available in development core. Use ncat or socat for HTTPS server"
 					exit 1
@@ -326,13 +328,18 @@ function _console {
 				exec bash "$FICTION_PATH/fiction.so.sh" "$FICTION_MODE"
 				;;
 			s|stats|status)
+				set -x
 				_read_file proc "/proc/$$/status"
-				[[ "$proc" =~ VmRSS:(.*)kB ]] && IFS=' ' read rss _ <<< "${BASH_REMATCH[1]}"
+				#echo "$IFS"
+				#declare -p IFS
+				[[ "$proc" =~ VmRSS:(.*)kB ]] && read rss _ <<< "${BASH_REMATCH[1]}"
+				echo "${BASH_REMATCH[1]} $rss $_"
 				if ((rss > 1024)); then
 					builtin printf -v size "%.2f MB" "${rss}e-3"
 				else
 					builtin printf -v size "%.d KB" "${size}"
 				fi
+				set +x
 				read conns < "$serverTmpDir/.conns"
 				time_ms
 				local seconds=$(( (ms - init_time) / 1000))
@@ -700,6 +707,7 @@ function fiction.respond() {
 }
 
 function fiction.worker() {
+	IFS="$orig_IFS"
 	#set -x
 	WORKER_FIFO="$1"
 	#WORKER_FIFO2="/dev/shm/.worker-$2.out"
