@@ -11,7 +11,7 @@ else
 fi
 ms="${EPOCHREALTIME//[.,]}"
 init_time="${ms::-3}"
-orig_IFS="$IFS"
+orig_IFS=$'\t\n '
 [[ -v FICTION_META ]] || FICTION_META=""
 _green=$'\e[38;5;2m'
 _red=$'\e[38;5;1m'
