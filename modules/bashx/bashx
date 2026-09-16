@@ -322,7 +322,7 @@ eof
 			fi
 			block1="${block1%%\}}"
     		_render "" <<< "${block1/@respond $status \{}"
-    		local newblock="FictionResponseHeaders['content-type']='text/html'"$'\n{\n'"${render_output}"$'\n} | fiction.respond '"$status"'' # > "$WORKER_OUT"; printf "%s\n" "'"$status"'" >"$WORKER_FIFO2"'
+    		local newblock="FictionResponseHeaders['content-type']='text/html'"$'\n{\n'"${render_output}"$'\n} | fiction.respond '"$status"'; __fiction_responded=1' # > "$WORKER_OUT"; printf "%s\n" "'"$status"'" >"$WORKER_FIFO2"'
 			newblock="${newblock//\&/\\\&}"
   		fi
   		newblock="${newblock##$'\n'}"

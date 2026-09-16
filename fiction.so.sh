@@ -228,6 +228,7 @@ function _spawn {
 							{
 								ms="${EPOCHREALTIME//[.,]/}"
 								worker_init_time="${ms::-3}"
+								read worker < /proc/sys/kernel/random/uuid
 								fiction.worker "&${ACCEPT_FD}" "$worker" <&${ACCEPT_FD};
 								exec {ACCEPT_FD}>&-;
 								if [[ -f "$serverTmpDir/.conns" ]]; then 
@@ -238,6 +239,7 @@ function _spawn {
 									esac
 								fi
 							} &
+							_add_job $! "worker-$worker"
 						fi
 					done &
 					_add_job $! "$1"
@@ -681,7 +683,9 @@ function fiction.respond() {
 			#echo "e2 $output"
 		fi
 	fi
-	[[ "${WORKER_FIFO::1}" == "&" ]] && _respondWithPayload >&"${WORKER_FIFO:1}" "$BINARY_OUTPUT" || _respondWithPayload >"$WORKER_FIFO" "$BINARY_OUTPUT"
+	#set -x
+	[[ "${WORKER_FIFO::1}" == "&" ]] && _respondWithPayload "$BINARY_OUTPUT" >&"${WORKER_FIFO:1}" || _respondWithPayload "$BINARY_OUTPUT" >"$WORKER_FIFO" 
+
 	__fiction_responded=1
 	[ -f "$filename" ] && rm "$filename"
 	_printRequestLog
@@ -691,7 +695,7 @@ function fiction.respond() {
 function fiction.worker() {
 	#set -x
 	WORKER_FIFO="$1"
-	WORKER_FIFO2="/dev/shm/.worker-$2.out"
+	#WORKER_FIFO2="/dev/shm/.worker-$2.out"
 	local worker_uuid="$2"
 	BASH_ARGV0="fiction-worker"
 	#trap profiler DEBUG
@@ -766,12 +770,14 @@ function fiction.worker() {
 			fi
 		esac
 
-	WORKER_OUT="/dev/shm/.fiction_output_$RANDOM"
+	WORKER_OUT="/dev/shm/.fiction_output_$SRANDOM"
 	filename="$WORKER_OUT"
 	time_ms
 	FictionRequest[process_time]="$((ms-worker_init_time))"
 	fiction.router
-	if [[ "$__fiction_responded" != 1 ]]; then 
+	#set -x
+	#echo "$__fiction_responded"
+	if [[ -z "$__fiction_responded" ]]; then 
 		_error "'$handled_by' provides no response status, falling back to 500"; 
 		fiction.500
 	fi
@@ -1019,7 +1025,7 @@ function fiction.server() {
 			[[ "$port" = 80 ]] && \
 					echo -n "http://$address" || \
 					echo -n "http://$address:$port";
-			#echo " (${FICTION_MODE:-${FICTION_MODE}} mode)";
+			echo " (${FICTION_MODE:-${FICTION_MODE}} mode)";
 			trap catch_job SIGCHLD
 			echo 0 > "$serverTmpDir/.conns"
 			_spawn 'network listener'
