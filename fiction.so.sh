@@ -233,6 +233,7 @@ function _spawn {
 								worker_init_time="${ms::-3}"
 								fiction.worker "&${ACCEPT_FD}" "$worker" <&${ACCEPT_FD};
 								exec {ACCEPT_FD}>&-;
+								exec {ACCEPT_FD}<&-;
 								if [[ -f "$serverTmpDir/.conns" ]]; then 
 									read conns <"$serverTmpDir/.conns"
 									case "${conns:-0}" in
