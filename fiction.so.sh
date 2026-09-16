@@ -704,8 +704,8 @@ function fiction.worker() {
 	BASH_ARGV0="fiction-worker"
 	#trap profiler DEBUG
 	local REQUEST_METHOD REQUEST_PATH HTTP_VERSION entry
-	read -r REQUEST_METHOD REQUEST_PATH HTTP_VERSION 2>/dev/null || return
-	HTTP_VERSION="${HTTP_VERSION%%$'\r'}"
+	read -r REQUEST_METHOD REQUEST_PATH HTTP_VERSION || return
+	HTTP_VERSION="${HTTP_VERSION//$'\r'}"
 	[[ "$HTTP_VERSION" =~ HTTP/[0-9]\.?[0-9]? ]] && HTTP_VERSION="${BASH_REMATCH[0]}" || return
 	[[ -z "$REQUEST_METHOD" || -z "$REQUEST_PATH" ]] && return
 	FictionRequest=(
