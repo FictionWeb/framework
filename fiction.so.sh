@@ -166,6 +166,7 @@ function catch_job {
 		esac
 	done <<< "$updated_jobs"
 	(( codes == 0 )) && return
+	_parse_jobs
 	for pid in "${!jobs[@]}"; do
 		job_name="${jobs[$pid]}"
 		[[ -z "${job_name}" ]] && continue
@@ -191,6 +192,23 @@ function catch_job {
 	#set +x
 }
 
+function _add_job {
+	[ -f "$serverTmpDir/.jobs" ] || : >"$serverTmpDir/.jobs"
+	echo "${1} ${2}" >>"$serverTmpDir/.jobs"
+}
+
+function _parse_jobs {
+	jobs=()
+	[ -f "$serverTmpDir/.jobs" ] || return
+	local line='' pid='' name=''
+	while read line; do
+		read pid name <<< "$line"
+		#echo "$pid $name"
+		jobs[$pid]="$name"
+	done <"$serverTmpDir/.jobs"
+}
+
+
 function _spawn {
 	case "$1" in
 	'network listener')
@@ -210,7 +228,7 @@ function _spawn {
 							{
 								ms="${EPOCHREALTIME//[.,]/}"
 								worker_init_time="${ms::-3}"
-								fiction.worker "&${ACCEPT_FD}" <&${ACCEPT_FD};
+								fiction.worker "&${ACCEPT_FD}" "$worker" <&${ACCEPT_FD};
 								exec {ACCEPT_FD}>&-;
 								if [[ -f "$serverTmpDir/.conns" ]]; then 
 									read conns <"$serverTmpDir/.conns"
@@ -222,7 +240,7 @@ function _spawn {
 							} &
 						fi
 					done &
-					jobs[$!]="$1"
+					_add_job $! "$1"
 				fi
 				;;
 			socat)
@@ -230,22 +248,22 @@ function _spawn {
 				if [[ "$ssl_enabled" == true ]]; then			
 					local ssl_cert="${Fiction[server.ssl.cert]:+cert=\"${Fiction[server.ssl.cert]}\",}" 
 					local ssl_key="${Fiction[server.ssl.key]:+key=\"${Fiction[server.ssl.key]}\",}"
-					exec -a "fiction" socat -T10 openssl-listen:"$port",bind="$address",verify=0,"${ssl_cert}${ssl_key}"reuseaddr,fork SYSTEM:"$serverTmpDir/job.sh" &
+					exec -a "fiction-listener" socat -T10 openssl-listen:"$port",bind="$address",verify=0,"${ssl_cert}${ssl_key}"reuseaddr,fork SYSTEM:"$serverTmpDir/job.sh" &
 				else
-					exec -a "fiction" socat -T10 TCP-LISTEN:$port,bind="$address",reuseaddr,fork EXEC:"$serverTmpDir/worker.sh" &
+					exec -a "fiction-listener" socat -T10 TCP-LISTEN:$port,bind="$address",reuseaddr,fork EXEC:"$serverTmpDir/worker.sh" &
 				fi
-				jobs[$!]="$1"
+				_add_job $! "$1"
 			;;
 			ncat)
 				which ncat >/dev/null || { _error "cannot find ncat binary" && return 1; }
 				if [[ "$ssl_enabled" == true ]]; then
 					local ssl_cert="${Fiction[server.ssl.cert]:+--ssl-cert \"${Fiction[server.ssl.cert]}\"}" 
 					local ssl_key="${Fiction[server.ssl.key]:+--ssl-key \"${Fiction[server.ssl.key]}\"}"
-					exec -a "fiction" ncat -klp "$port" -c "$serverTmpDir/worker.sh" --ssl "$ssl_cert" "$ssl_key" -w 10 &
+					exec -a "fiction-listener" ncat -klp "$port" -c "$serverTmpDir/worker.sh" --ssl "$ssl_cert" "$ssl_key" -w 10 &
 				else
-					exec -a "fiction" ncat -klp "$port" -c "$serverTmpDir/worker.sh" -w 10 &
+					exec -a "fiction-listener" ncat -klp "$port" -c "$serverTmpDir/worker.sh" -w 10 &
 				fi
-				jobs[$!]="$1"
+				_add_job $! "$1"
 			;;
 			nc | netcat)
 				nc --version 2> 1 > /dev/null && nc_path="nc.traditional" || nc_path="nc";
@@ -254,10 +272,10 @@ function _spawn {
 					_error "HTTPS is not supported in legacy netcat mode" 1>&2
 				else
 					while true; do
-							exec -a "fiction" $nc_path -vklp "$port" -e "$serverTmpDir/worker.sh";
+							exec -a "fiction-listener" $nc_path -vklp "$port" -e "$serverTmpDir/worker.sh";
 							(($? != 0)) && break
 					done &
-					jobs[$!]="$1"
+					_add_job $! "$1"
 				fi
 			;;
 		esac
@@ -273,14 +291,15 @@ function _spawn {
 				ms="${EPOCHREALTIME//[.,]/}"
 				worker_init_time="${ms::-3}"
         		#printf "worker: %s\n" "$worker"
-        		fiction.worker "/dev/shm/.worker-$worker.in" <"/dev/shm/.worker-$worker.out";
+        		fiction.worker "/dev/shm/.worker-$worker.in" "$worker" <"/dev/shm/.worker-$worker.out";
     		} &
+			_add_job $! "worker-$worker"
 		done &
-		jobs[$!]="$1"
+		_add_job $! "$1"
 		;;
 	'hot-reload')
 		_hotreload &
-		jobs[$!]="$1"
+		_add_job $! "$1"
 		;;
 	*) return
 	esac
@@ -318,9 +337,15 @@ function _console {
 				echo "RSS: $size"
 				echo "total connections: ${conns:=0}"
 				echo "active jobs:"
+				_parse_jobs && : >"$serverTmpDir/.jobs"
 				for pid in "${!jobs[@]}"; do
 					printf "%s" "- ${jobs[$pid]} ($pid)"
-					[[ -f "/proc/${pid}/status" ]] && printf "\n" || printf " %s\n" "(exited)"
+					if [[ -f "/proc/${pid}/status" ]]; then 
+						printf "\n"
+						echo "$pid ${jobs[$pid]}" >>"$serverTmpDir/.jobs"
+					else
+						printf " %s\n" "(exited)"
+					fi
 				done
 				;;
 		esac
@@ -330,12 +355,14 @@ function _console {
 clean() {
 	[[ "$restart" == true ]] && echo -e "\nRestarting the server..." || echo -e "\nStopping the server..."
 	{
+		_parse_jobs
 		[[ -n "$serverTmpDir" && -d "$serverTmpDir" ]] && rm -rf "$serverTmpDir"
-		kill "${!jobs[@]}"
 		printf "" > "$FICTION_PATH/fiction.lock"
-		echo "Waiting for all jobs to exit... (${!jobs[@]})"
-		wait "${!jobs[@]}"
-		
+		if [[ "${#jobs[@]}" != 0 ]]; then 
+			kill "${!jobs[@]}"
+			echo "Waiting for all jobs to exit... (${!jobs[@]})"
+			wait "${!jobs[@]}"
+		fi	
 	} 2>/dev/null
 	[[ "$restart" == true ]] || exit
 }
@@ -403,26 +430,6 @@ function _warn() {
 	echo -e "${_yellow}⚠ $@${_nc}" >&2
 }
 
-__htmlhelper() {
-	local file="$1" output=''
-	[ -f "$file" ] || return
-	_read_file output "$file" 
-	if [[ "${output::6}" != '<html>' && "${output::15}" != '<!DOCTYPE html>' ]]; then
-		cat <<- EOF 
-			<!DOCTYPE html>
-			<html>
-				<head>
-					<meta name="viewport" content="width=device-width, initial-scale=1.0">
-						${FictionResponse[head]}$FICTION_META
-					</head>
-EOF
-		[[ "${output}" == *"<body"* ]] && echo "$output" || echo "<body>$output</body>";
-		[[ "${Fiction[plugins@v]}" == *"lucide-icons"* ]] && echo '<script>lucide.createIcons();</script>'
-		echo "</html>";
-	else
-		echo "$output"
-	fi >"$file"
-}
 
 __encode() {
 	[[ "${Fiction[server.compression]}" == true ]] && \
@@ -528,9 +535,165 @@ function fiction.router() {
 	fi
 }
 
+_respondWithPayload() {
+	printf '%s %s\n' "HTTP/1.1" "${FictionResponse["status"]}"
+	if [[ "$routetype" != "cgi" ]]; then
+		for key in "${!FictionResponseHeaders[@]}"; do printf '%s: %s\n' "${key,,}" "${FictionResponseHeaders[$key]}"; done
+		for value in "${FictionResponseCookie[@]}"; do printf 'set-cookie: %s\n' "$value"; done
+		(( ! empty_body )) && printf "\n"
+	fi
+	(( size == 0 || empty_body )) || { [[ "$1" != 1 ]] && echo "$output" || cat "$filename"; }
+	return 0
+}
+
+_printRequestLog() {
+		time_ms
+	local time2="$ms"
+
+	local time=$((time2-worker_init_time))
+	if ((time < 150)); then
+		time="${_green}${time}${_nc}ms"
+	elif ((time < 500)); then 
+		time="${_yellow}${time}${_nc}ms"
+	else
+		((time > 1000)) && printf -v time "${_red}%.2f${_nc}s" "${time}e-3" || time="${_red}${time}${_nc}ms"
+	fi
+	if ((size > 1048576)); then
+		builtin printf -v size "%.2f MB" "$((size/1024))e-3"
+	elif ((size > 1024)); then
+		builtin printf -v size "%.2f KB" "${size}e-3"
+	else 
+		size="$size B"
+	fi
+	case "${FictionResponse[status]::3}" in
+		2[0-9][0-9]) local status="${_green}${FictionResponse[status]}${_nc}" ;;
+		3[0-9][0-9]) local status="${_yellow}${FictionResponse[status]}${_nc}" ;;
+		4[0-9][0-9]|5[0-9][0-9]) local status="${_red}${FictionResponse[status]}${_nc}" ;;
+		*) status="${FictionResponse[status]}"
+	esac
+	[[ "${Fiction[logs.timestamp]}" == true ]] && builtin printf "${_gray}%(%d/%m/%y %H:%M:%S)T${_nc} "
+	if [[ ${FICTION_MODE} == development ]]; then
+		cat << EOF >&2
+$HTTP_VERSION $REQUEST_METHOD $REQUEST_PATH $status in $time ($size)
+Handled by: $handled_by
+EOF
+		[[ "${Fiction[logs.address]:-true}" == true ]] && printf "%s\n" "Address: ${FictionRequestHeaders[x-forwarded-for]:-${FictionRequest[addr]}}"
+
+		if [[ "${Fiction[logs.request_headers]:-false}" == true ]]; then
+			printf "%s\n" "Headers: "
+			for key in ${!FictionRequestHeaders[@]}; do 
+				printf "< ${_bold}%s${_nc}: %s\n" "${key,,}" "${FictionRequestHeaders[$key]}"
+			done
+		fi
+		
+		if [[ "${Fiction[logs.response]}" == true ]]; then
+			printf "\n"
+			printf '> %s %s\n' "HTTP/1.1" "$status"
+			for key in "${!FictionResponseHeaders[@]}"; do printf "> ${_bold}%s${_nc}: %s\n" "${key,,}" "${FictionResponseHeaders[$key]}"; done
+			for value in "${FictionResponseCookie[@]}"; do printf '> set-cookie: %s\n' "$value"; done
+			(( ! empty_body )) && printf "\n"
+		fi
+	else
+			#printf "%s" "${_gray}${timestamp}${_nc} "
+			[[ "${Fiction[logs.address]:-true}" == true ]] && printf "%s" "${FictionRequestHeaders[x-forwarded-for]:-${FictionRequest[addr]}}"
+			printf "%s\n" " $HTTP_VERSION $REQUEST_PATH $status $time"
+	fi
+}
+
+
+__htmlhelper() {
+	local file="$1" 
+	if [[ -z "$output" ]]; then 
+		[ -f "$file" ] || return 1
+		_read_file output "$file"
+		local to_file=1
+	fi
+	local result=""
+	if [[ "${output::6}" != '<html>' && "${output::15}" != '<!DOCTYPE html>' ]]; then
+		result="<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width, initial-scale=1.0'>${FictionResponse[head]}$FICTION_META</head>"
+		result+=$'\n'
+		[[ "${output}" == *"<body"* ]] && result+="$output" || result+="<body>$output</body>"
+		result+=$'\n'
+		[[ "${Fiction[plugins@v]}" == *"lucide-icons"* ]] && result+='<script>lucide.createIcons();</script>'
+		result+='</html>'
+		[[ -n "$to_file" ]] && echo "$result" >"$file" || output="$result"
+	fi
+	return 0
+}
+
+function fiction.respond() {
+	local output='';
+	: "${BINARY_OUTPUT:=0}"
+	[[ "$__fiction_responded" == 1 ]] && return
+	[[ -z "$WORKER_OUT" ]] && _error "function used outside of worker or doesn't have worker output variable accessible" >&2 && return 1
+	[[ -z "$1" ]] && _error "At least one argument expected" >&2 && return 1
+		
+	#fiction.response_code.set "$1"
+
+	if [[ $1 != 204 && -z "$2" ]]; then
+		while IFS= read -r chunk; do 
+			#echo "$chunk"; 
+			output+="$chunk"
+		done
+	else 
+		output="$2"
+	fi
+	#echo "$output" >"$WORKER_OUT"
+	#set -x
+	fiction.response_code.set "$1"
+	#[[ "$WORKER_FIFO2" ]] && printf "%s\n" "$1|${FictionResponseHeaders[content-type]}" >"$WORKER_FIFO2"
+
+	case "$1" in
+		201|204) local empty_body=1 ;;
+		*) local empty_body=0
+	esac
+	#set +x
+	local headers="${!FictionResponseHeaders[@]}"
+	local routetype="$type"
+	local filetype="$contenttype"
+	[[ "$headers" != *"server"* ]] && FictionResponseHeaders[server]="Fiction/${Fiction[version]//v}"
+
+		
+	if (( ! empty_body )); then
+		if [[ "$headers" == *"Content-Type"* ]]; then 
+			FictionResponseHeaders[content-type]="${FictionResponseHeaders[Content-Type]}"
+			unset 'FictionResponseHeaders[Content-Type]'
+		fi
+
+		if [[ "$BINARY_OUTPUT" == 1 ]]; then
+			case "${FictionResponseHeaders[content-type]}" in
+				'') FictionResponseHeaders[content-type]="${filetype:-application/octet-stream}" ;;
+				text/html) [[ "$routetype" != cgi ]] && __htmlhelper "$filename" ;;
+			esac
+			__encode "$filename"
+			subshell filesize wc -c "$filename"
+			read size filename <<<"$filesize"
+			[[ "${size:=0}" == 0 ]] && empty_body=1 
+			FictionResponseHeaders[content-length]="${size:-0}"
+		else
+			#echo "e $output"
+			case "${FictionResponseHeaders[content-type]}" in
+				'') FictionResponseHeaders[content-type]="${filetype:-text/plain}" ;;
+				text/html) __htmlhelper "$filename" ;;
+			esac
+			size="${#output}"
+			FictionResponseHeaders[content-length]="$size"
+			#echo "e2 $output"
+		fi
+	fi
+	[[ "${WORKER_FIFO::1}" == "&" ]] && _respondWithPayload >&"${WORKER_FIFO:1}" "$BINARY_OUTPUT" || _respondWithPayload >"$WORKER_FIFO" "$BINARY_OUTPUT"
+	__fiction_responded=1
+	[ -f "$filename" ] && rm "$filename"
+	_printRequestLog
+	return
+}
+
 function fiction.worker() {
 	#set -x
 	WORKER_FIFO="$1"
+	WORKER_FIFO2="/dev/shm/.worker-$2.out"
+	local worker_uuid="$2"
+	BASH_ARGV0="fiction-worker"
 	#trap profiler DEBUG
 	local REQUEST_METHOD REQUEST_PATH HTTP_VERSION entry
 	read -r REQUEST_METHOD REQUEST_PATH HTTP_VERSION 2>/dev/null || return
@@ -608,123 +771,9 @@ function fiction.worker() {
 	time_ms
 	FictionRequest[process_time]="$((ms-worker_init_time))"
 	fiction.router
-	if [[ "$__fiction_responded" != 1 ]]; then
-		_error "'$handled_by' provides no response or any 'fiction.respond' trigger, falling back to 500"; 
-		fiction.500 
-	fi
-	case "${FictionResponse["status"]::3}" in
-		'') 
-			_error "'$handled_by' provides no response status, falling back to 500"; 
-			fiction.500 
-			;;
-		201|204) local empty_body=1 ;;
-		*) local empty_body=0
-	esac
-
-	local headers="${!FictionResponseHeaders[@]}"
-	local routetype="$type"
-	local filetype="$contenttype"
-	[[ "$headers" != *"server"* ]] && FictionResponseHeaders[server]="Fiction/${Fiction[version]//v}"
-
-		
-	if (( ! empty_body )); then
-		if [[ "$headers" == *"Content-Type"* ]]; then 
-			FictionResponseHeaders[content-type]="${FictionResponseHeaders[Content-Type]}"
-			unset 'FictionResponseHeaders[Content-Type]'
-		fi
-
-		case "${FictionResponseHeaders["content-type"]}" in
-			'')
-				if [[ -z "$filetype" || "$filetype" == "auto" ]]; then
-					FictionResponseHeaders["content-type"]="application/octet-stream"
-				else
-					FictionResponseHeaders["content-type"]="${filetype}"
-				fi
-				;;
-			text/html)
-				[[ "$routetype" != cgi ]] && __htmlhelper "$filename"
-		esac
-		__encode "$filename"
-		subshell filesize wc -c "$filename"
-		read size filename <<<"$filesize"
-		FictionResponseHeaders["content-length"]="${size:-0}"
-	fi
-	
-	if [[ "${WORKER_FIFO::1}" == "&" ]]; then
-		{
-			printf '%s %s\n' "HTTP/1.1" "${FictionResponse["status"]}"
-			if [[ "$routetype" != "cgi" ]]; then
-				for key in "${!FictionResponseHeaders[@]}"; do printf '%s: %s\n' "${key,,}" "${FictionResponseHeaders[$key]}"; done
-				for value in "${FictionResponseCookie[@]}"; do printf 'set-cookie: %s\n' "$value"; done
-				(( ! empty_body )) && printf "\n"
-			fi
-			(( size == 0 || empty_body )) || cat "$filename"
-		} >&"${WORKER_FIFO:1}"
-	else
-		{
-			printf '%s %s\n' "HTTP/1.1" "${FictionResponse["status"]}"
-			if [[ "$routetype" != "cgi" ]]; then
-				for key in "${!FictionResponseHeaders[@]}"; do printf '%s: %s\n' "${key,,}" "${FictionResponseHeaders[$key]}"; done
-				for value in "${FictionResponseCookie[@]}"; do printf 'set-cookie: %s\n' "$value"; done
-				(( ! empty_body )) && printf "\n"
-			fi
-			(( size == 0 || empty_body )) || cat "$filename"
-		} >"$WORKER_FIFO"
-	fi
-	#printf "\n"
-	#exec 1>&4 4>&-
-	#exec 3>&-
-	rm "$filename"
-	time_ms
-	local time2="$ms"
-
-	local time=$((time2-worker_init_time))
-	if ((time < 150)); then
-		time="${_green}${time}${_nc}ms"
-	elif ((time < 500)); then 
-		time="${_yellow}${time}${_nc}ms"
-	else
-		((time > 1000)) && printf -v time "${_red}%.2f${_nc}s" "${time}e-3" || time="${_red}${time}${_nc}ms"
-	fi
-	if ((size > 1048576)); then
-		builtin printf -v size "%.2f MB" "$((size/1024))e-3"
-	elif ((size > 1024)); then
-		builtin printf -v size "%.2f KB" "${size}e-3"
-	else 
-		size="$size B"
-	fi
-	case "${FictionResponse[status]::3}" in
-		2[0-9][0-9]) local status="${_green}${FictionResponse[status]}${_nc}" ;;
-		3[0-9][0-9]) local status="${_yellow}${FictionResponse[status]}${_nc}" ;;
-		4[0-9][0-9]|5[0-9][0-9]) local status="${_red}${FictionResponse[status]}${_nc}" ;;
-		*) status="${FictionResponse[status]}"
-	esac
-	[[ "${Fiction[logs.timestamp]}" == true ]] && builtin printf "${_gray}%(%d/%m/%y %H:%M:%S)T${_nc} "
-	if [[ ${FICTION_MODE} == development ]]; then
-		cat << EOF >&2
-$HTTP_VERSION $REQUEST_METHOD $REQUEST_PATH $status in $time ($size)
-Handled by: $handled_by
-EOF
-		[[ "${Fiction[logs.address]:-true}" == true ]] && printf "%s\n" "Address: ${FictionRequestHeaders[x-forwarded-for]:-${FictionRequest[addr]}}"
-
-		if [[ "${Fiction[logs.request_headers]:-false}" == true ]]; then
-			printf "%s\n" "Headers: "
-			for key in ${!FictionRequestHeaders[@]}; do 
-				printf "< ${_bold}%s${_nc}: %s\n" "${key,,}" "${FictionRequestHeaders[$key]}"
-			done
-		fi
-		
-		if [[ "${Fiction[logs.response]}" == true ]]; then
-			printf "\n"
-			printf '> %s %s\n' "HTTP/1.1" "$status"
-			for key in "${!FictionResponseHeaders[@]}"; do printf "> ${_bold}%s${_nc}: %s\n" "${key,,}" "${FictionResponseHeaders[$key]}"; done
-			for value in "${FictionResponseCookie[@]}"; do printf '> set-cookie: %s\n' "$value"; done
-			(( ! empty_body )) && printf "\n"
-		fi
-	else
-			#printf "%s" "${_gray}${timestamp}${_nc} "
-			[[ "${Fiction[logs.address]:-true}" == true ]] && printf "%s" "${FictionRequestHeaders[x-forwarded-for]:-${FictionRequest[addr]}}"
-			printf "%s\n" " $HTTP_VERSION $REQUEST_PATH $status $time"
+	if [[ "$__fiction_responded" != 1 ]]; then 
+		_error "'$handled_by' provides no response status, falling back to 500"; 
+		fiction.500
 	fi
 	unset status handled_by routetype size time
 	#exit
@@ -745,21 +794,6 @@ function fiction.cookie.set() {
 	FictionResponseCookie+=("$1")
 }
 
-fiction.respond() {
-	local output;
-	[[ "$__fiction_responded" == 1 ]] && return
-	[[ -z "$WORKER_OUT" ]] && _error "function used outside of worker or doesn't have worker output variable accessible" >&2 && return 1
-	[[ -z "$1" ]] && _error "At least one argument expected" >&2 && return 1
-		
-	fiction.response_code.set "$1"
-	
-	[[ $1 != 204 && -z "$2" ]] && while read -r chunk; do output+="$chunk"; done || local output="$2"
-		
-	echo "$output" >"$WORKER_OUT"
-	
-	__fiction_responded=1
-	return
-}
 
 declare -F fiction.404 >/dev/null || fiction.404() {
 #  INCLUDE_DOM=false
@@ -985,7 +1019,7 @@ function fiction.server() {
 			[[ "$port" = 80 ]] && \
 					echo -n "http://$address" || \
 					echo -n "http://$address:$port";
-			echo " (${FICTION_MODE:-${FICTION_MODE}} mode)";
+			#echo " (${FICTION_MODE:-${FICTION_MODE}} mode)";
 			trap catch_job SIGCHLD
 			echo 0 > "$serverTmpDir/.conns"
 			_spawn 'network listener'
@@ -1007,9 +1041,9 @@ function fiction.server() {
 					echo -n "http://$address:$port";
 			fi
 			echo " (${FICTION_MODE:-${FICTION_MODE}} mode)";
-			trap catch_job SIGCHLD
+			#trap catch_job SIGCHLD
 			echo 0 > "$serverTmpDir/.conns"
-			_spawn 'network listener'
+			_spawn 'network listener' || return
 			mkfifo "$serverTmpDir/.workers"
 			_spawn 'threader'
 			time_ms
