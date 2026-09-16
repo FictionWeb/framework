@@ -362,10 +362,13 @@ clean() {
 		_parse_jobs
 		[[ -n "$serverTmpDir" && -d "$serverTmpDir" ]] && rm -rf "$serverTmpDir"
 		printf "" > "$FICTION_PATH/fiction.lock"
-		if [[ "${#jobs[@]}" != 0 ]]; then 
-			kill "${!jobs[@]}"
+		if [[ "${#jobs[@]}" != 0 ]]; then
 			echo "Waiting for all jobs to exit... (${!jobs[@]})"
-			wait "${!jobs[@]}"
+			for pid in "${!jobs[@]}"; do
+				[ -f "/proc/$pid/status" ] || continue
+				kill "$pid"
+				wait "$pid"
+			done
 		fi	
 	} 2>/dev/null
 	[[ "$restart" == true ]] || exit
