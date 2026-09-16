@@ -631,7 +631,7 @@ json_to_arr() {
 	else 
 		IFS=',' read -r -a json_keys <<< "${json:1}"
 	fi
-	unset IFS
+	#unset IFS
 	arr_len="${#json_keys[@]}"
 	for ((i=0; i<=arr_len; i++)); do
 	# line in "${json_keys[@]}"; do
