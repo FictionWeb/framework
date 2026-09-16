@@ -414,6 +414,7 @@ function _mktmpDir() {
 	! pidof fiction >/dev/null && [ -d "/dev/shm/.fiction" ] && rm -rf /dev/shm/.fiction/* 2>&1 >/dev/null
 	local hex
 	subshell hex openssl rand -hex 16
+	hex="${hex##$'\n'}"
 	serverTmpDir="/tmp/.fiction/tmp_$hex"
  
 		if ! mkdir -p "$serverTmpDir" 2>&1 >/dev/null; then
