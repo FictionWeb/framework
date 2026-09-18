@@ -712,8 +712,10 @@ function fiction.respond() {
 		__fiction_responded=1
 		[[ "$routetype" != "file" ]] && [ -f "$filename" ] && rm "$filename"
 		_printRequestLog
+	else
+		_respondWithPayload "$BINARY_OUTPUT" >"$WORKER_FIFO"
 	fi
-	return
+	return 0
 }
 
 function fiction.worker() {
@@ -1189,16 +1191,19 @@ _build() {
 		path="${default_dir:=fiction_compiled}$route"
 		[[ "$route" ]] && mkdir -p "$path"
 		IFS=' ' read func funcargs <<< "$func";
+		filename="$path/$type.html"
 		WORKER_OUT="$path/$type.html"
+		WORKER_FIFO="$path/$type.html"
 		"${func}" ${funcargs//\"/\\\"} &
 		pid=$!
 		s='-\|/'; i=0; while kill -0 $pid 2>/dev/null; do i=$(((i+1)%4)); printf "\r[${s:$i:1}] $route\r"; sleep .1; done
 		wait $pid
-		if [[ "$filetype" == text/html && "$type" != cgi ]]; then
-			__htmlhelper "$path/$type.html";
-		fi
 		exit=$?
-		[[ $exit == 0 ]] && [ -f "$path/$type.html" ] && echo "[$_green✓$_nc] $route (${path%%\/}/${type}.html)" ||  echo "[${_red}x${_nc}] $route ($exit)"
+		if [[ $exit == 0 ]]; then 
+			[ -f "$path/$type.html" ] && echo "[$_green✓$_nc] $route (${path%%\/}/${type}.html)" ||  echo "[${_red}x${_nc}] $route (file doesn't exist)"
+		else
+			echo "[${_red}x${_nc}] $route ($exit)"
+		fi
 	done
 	rm -rf "$serverTmpDir"
 	time_ms
