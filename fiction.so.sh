@@ -1282,7 +1282,7 @@ _modulesLoader() {
 					FictionModule[shelljq]="$dir/shjq"
 					source "$dir/shjq"
 				else
-					_error "cannot shelljq ($dir/shjq)"
+					_error "cannot find shelljq ($dir/shjq)"
 				fi
 			;;
 			*) 
