@@ -634,12 +634,15 @@ __htmlhelper() {
 	fi
 	local result=""
 	if [[ "${output::6}" != '<html>' && "${output::15}" != '<!DOCTYPE html>' ]]; then
+	#set -x
+	declare -p FictionResponse FICTION_META
 		result="<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width, initial-scale=1.0'>${FictionResponse[head]}$FICTION_META</head>"
 		result+=$'\n'
 		[[ "${output}" == *"<body"* ]] && result+="$output" || result+="<body>$output</body>"
 		result+=$'\n'
 		[[ "${Fiction[plugins@v]}" == *"lucide-icons"* ]] && result+='<script>lucide.createIcons();</script>'
 		result+='</html>'
+		set +x
 		[[ -n "$to_file" ]] && echo "$result" >"$file" || output="$result"
 	fi
 	return 0
@@ -815,9 +818,11 @@ function fiction.worker() {
 }
 
 function fiction.addMeta() {
-	local input
-	[[ "$#" == 0 ]] && read -rd'' input || input="$@"
-	FictionResponse[head]+="$input"
+	local input=''
+	#set -x
+	[[ "$#" == 0 ]] && while read -r; do input+="$REPLY"$'\n'; done || input="$@"
+	FICTION_META+="$input"
+	set +x
 }
 
 function fiction.header.set() {
@@ -1194,9 +1199,9 @@ _build() {
 		filename="$path/$type.html"
 		WORKER_OUT="$path/$type.html"
 		WORKER_FIFO="$path/$type.html"
-		set -x
+		#set -x
 		to_file=1 "${func}" ${funcargs//\"/\\\"} &
-		set +x
+		#set +x
 		pid=$!
 		s='-\|/'; i=0; while kill -0 $pid 2>/dev/null; do i=$(((i+1)%4)); printf "\r[${s:$i:1}] $route\r"; sleep .1; done
 		wait $pid
