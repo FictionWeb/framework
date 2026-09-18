@@ -451,8 +451,8 @@ __encode() {
 	case "${FictionRequestHeaders[accept-encoding]}" in
 		*gzip*)
 			FictionResponseHeaders["content-encoding"]="gzip"
-			gzip -n "$1"
-			mv -n "${1}.gz" "$1"
+			gzip -nk "$1" 2>/dev/null
+			[[ "$routetype" != file ]] && mv -n "${1}.gz" "$1" || filename="$1.gz"
 			;;
 		*) return ;;
 	esac
@@ -504,14 +504,15 @@ function fiction.router() {
 	esac
 	
 	local route func route1 func1 m=false path="${FictionRequest[path]}" ou;
-	# "$route|$funcname|$type|${content_type}"
+	### FictionRoute[$path]="$route|$funcname|$type|${content_type}"
 	ou="${FictionRoute[$path]}"
 	if [[ "$ou" ]]; then
 		IFS='|' read route func type contenttype <<< "$ou";
 		IFS=' ' read func funcargs <<< "$func";
 		FICTION_ROUTE="$path";
 		handled_by="$func"
-		if [[ "$type" == cgi ]]; then
+		case "$type" in
+		cgi)
 			local headers=;
 			SERVER_SOFTWARE="fiction/${Fiction[version]//v}" \
 			REQUEST_METHOD="${FictionRequest[method]}" \
@@ -524,12 +525,20 @@ function fiction.router() {
 			SCRIPT_FILENAME="$func" \
 			HTTP_USER_AGENT="${FictionRequestHeaders[user-agent]}" \
 			HTTP_COOKIE="${FictionRequestHeaders[cookie]}" \
-			$func;
-		else
+			"$func";
+			;;
+		file)
+			if [[ -f "$func" ]]; then
+				BINARY_OUTPUT=1 filename="$func" fiction.respond 200;
+			else
+				fiction.404;
+			fi
+			;;
+		*)
 			#parsePost
-			[[ "$func" == 'echo' ]] && $func "${funcargs//\"/\\\"}" || $func ${funcargs};
+			"$func" ${funcargs};
 			#set +x
-		fi
+		esac
 	elif (( "${#FictionDynamicRoute[@]}" != 0 )); then
 		for route in "${FictionDynamicRoute[@]}"; do
 			IFS='|' read route func type contenttype <<< "$route";
@@ -541,7 +550,7 @@ function fiction.router() {
 			slugs="${slugs% }" 
 			IFS=' ' read _ $slugs <<< "${BASH_REMATCH[@]}"
 			handled_by="$func"
-			$func
+			"$func"
 			return
 		done
 		fiction.404
@@ -698,11 +707,12 @@ function fiction.respond() {
 		fi
 	fi
 	#set -x
-	[[ "${WORKER_FIFO::1}" == "&" ]] && _respondWithPayload "$BINARY_OUTPUT" >&"${WORKER_FIFO:1}" || _respondWithPayload "$BINARY_OUTPUT" >"$WORKER_FIFO" 
-
-	__fiction_responded=1
-	[ -f "$filename" ] && rm "$filename"
-	_printRequestLog
+	if [[ -z "$FICTION_BUILD" ]]; then 
+		[[ "${WORKER_FIFO::1}" == "&" ]] && _respondWithPayload "$BINARY_OUTPUT" >&"${WORKER_FIFO:1}" || _respondWithPayload "$BINARY_OUTPUT" >"$WORKER_FIFO" 
+		__fiction_responded=1
+		[[ "$routetype" != "file" ]] && [ -f "$filename" ] && rm "$filename"
+		_printRequestLog
+	fi
 	return
 }
 
@@ -881,28 +891,40 @@ function fiction() {
 
 function fiction.serve() {
 	# fiction.serve <from> <to:fn> <as> <type?> <headers?>
-	local funcname route args
+	local funcname route args filetype
 	[[ "$FICTION_HOTRELOAD" ]] && return
 	[[ -z "$1" || -z "$2" ]] && _error "\$1 or \$2 missing" && return 1
 	local type="${4:-static}"
 	[[ "${FictionRoute["$1"]}" ]] && _error "Dublicate of existing route $1" && return 1
 	route="$1"
 	[[ "${route: -1}" == '/' ]] || route="${route}/"
-	IFS=' ' read -r funcname args <<< "$2"
+	IFS=' ' read funcname args <<< "$2"
 	case "$type" in 
 		"cgi")
 			if [ ! -x "$2" ]; then 
 				_error "$2 is not an executable. Check if the file exists and has executable permission"
 				return 1
 			fi
-			FictionRoute["$route"]="$route|$funcname|cgi|${3:-auto}"
+			FictionRoute[$route]="$route|$funcname|cgi|${3:-auto}"
 			;;
-		"static"|"file")
+		"static")
 			if ! declare -F "$funcname" > /dev/null; then 
 				_error "$funcname is not a function"
 				return 1
 			fi
-			FictionRoute["$route"]="$route|${funcname}${args:+ $args}|$type|${3:-auto}"
+			FictionRoute[$route]="$route|${funcname}${args:+ $args}|$type|${3:-auto}"
+			;;
+		"file")
+			if [[ ! -f "$funcname" ]]; then
+				_error "$funcname is either inaccessible or does not exist"
+				return 1
+			fi
+			if [[ -z "$3" ]]; then
+				subshell filetype file "$funcname" --mime-type -b
+			else
+				filetype="$3"
+			fi
+			FictionRoute[$route]="$route|${funcname}|file|${filetype:-auto}"
 			;;
 		"dynamic")
 			if ! declare -F "$funcname" > /dev/null; then 
@@ -942,32 +964,28 @@ function fiction.redirect() {
 }
 
 function fiction.serveFile() {
-	[ ! -f "$1" ] && _error "$1 is not a file" && return 1
-	subshell uuid uuidgen
-	local ROUTEFN="FR${uuid}";
-	unset uuid
-	if [[ "$4" ]]; then
-		declare -n __headers="$4"
-		local hline='';
-		for header in ${!__headers[@]}; do
-		hline+=" fiction.header.set '$header' '${__headers[$header]}'; ";
-		done
-		unset headers
-	fi
-	eval "${ROUTEFN}(){ ${4:+$hline} cat \"$1\"; }";
-	local ROUTEPATH;
+	[ ! -f "$1" ] && _error "$1 is either inaccessible or does not exist" && return 1
+	#if [[ "$4" ]]; then
+	#	declare -n __headers="$4"
+	#	local hline='';
+	#	for header in ${!__headers[@]}; do
+	#	hline+=" fiction.header.set '$header' '${__headers[$header]}'; ";
+	#	done
+	#	unset headers
+	#fi
+	local route;
 	if [[ -n "$2" ]]; then
-		ROUTEPATH="$2";
+		route="$2";
 	else
-		ROUTEPATH="${1}";
-		if [ "${ROUTEPATH::1}" == "." ]; then
-			ROUTEPATH="${ROUTEPATH:1}";
+		route="${1}";
+		if [ "${route::1}" == "." ]; then
+			route="${route:1}";
 		fi
-		if [[ "${ROUTEPATH::1}" != '/' ]]; then
-			ROUTEPATH="/${ROUTEPATH}";
+		if [[ "${route::1}" != '/' ]]; then
+			route="/${route}";
 		fi
 	fi
-	fiction.serve "${ROUTEPATH}" "${ROUTEFN}" "${3:-$(file --mime-type -b "${1}")}" "file"
+	fiction.serve "${route}" "$1" "${3:-$(file --mime-type -b "${1}")}" "file"
 }
 
 function fiction.serveDir() {
@@ -989,11 +1007,11 @@ function fiction.serveDir() {
 			if [ -d "$item" ]; then
 				[[ "${5:-true}" == true ]] && fiction.serveDir "${item}" "${ROUTE_APPEND}/${item##*/}" "$download" > /dev/null;
 			else
-				ROUTEPATH="${item}"
-				if [ "${ROUTEPATH::1}" == "." ]; then
-					ROUTEPATH="${ROUTEPATH:1}";
+				route="${item}"
+				if [ "${route::1}" == "." ]; then
+					route="${route:1}";
 				fi
-				fiction.serveFile "${item}" "${ROUTE_APPEND}/${ROUTEPATH##*/}" "$type" > /dev/null;
+				fiction.serveFile "${item}" "${ROUTE_APPEND}/${route##*/}" "$type" > /dev/null;
 			fi
 		done
 	else
@@ -1158,11 +1176,13 @@ _build() {
 	for route in "${FictionRoute[@]}"; do
 		# FictionRoute["$route"]="$route|${funcname}${args:+ $args}|$type|${filetype:-auto}"
 		IFS='|' read route func type filetype <<< "$route";
+		[[ "$route" != '/' ]] && route="${route%%\/}"
 		echo -ne "(-) $route...\r"
 		if [[ "$type" == "file" ]]; then
+			local filename="${func##*/}"
 			path="${default_dir:=fiction_compiled}${route}"
-			mkdir -p "${path%/*}"
-			"$func" > "$path"
+			mkdir -p "${path%%${filename}}"
+			cp "$func" "$path"
 			echo "[$_green✓$_nc] $route ($path)"
 			continue
 		fi
@@ -1170,7 +1190,7 @@ _build() {
 		[[ "$route" ]] && mkdir -p "$path"
 		IFS=' ' read func funcargs <<< "$func";
 		WORKER_OUT="$path/$type.html"
-		${func} ${funcargs//\"/\\\"} & 
+		"${func}" ${funcargs//\"/\\\"} &
 		pid=$!
 		s='-\|/'; i=0; while kill -0 $pid 2>/dev/null; do i=$(((i+1)%4)); printf "\r[${s:$i:1}] $route\r"; sleep .1; done
 		wait $pid
@@ -1186,21 +1206,7 @@ _build() {
 }
 
 _buildWorker() {
-		#echo "FICTION_PATH='$FICTION_PATH'"
-		#declare -f subshell
-		#declare -A
-		#unset -f fiction.server @cache @prerender  _modulesLoader _hotreload _configParser _build _buildWorker _helpmsg
-		#unset -f json_pretty
-		#[[ "${FictionModule[bashx]}" ]] && unset -f @import bashx _mktmpDir @render_type @wrapper _render _conditionalRender
-		#[[ "${FictionModule[mdx]}" ]] && unset -f __renderMd
-		#current_snapshot="$(set)"
-		#current_snapshot="${current_snapshot//$'\n'/; }"
-		#echo "${current_snapshot//${env_snapshot//$'\n'/; }}"
-		#declare -p $(compgen -v | grep -v -F -f <(env -i bash -c 'compgen -v; printf "%s\n" BROWSER PS1 PS2 HISTFILE HOME LINES MAILCHECK COLUMNS HISTSIZE LANG LOGNAME PIPESTATUS USER envVarsToReport BASH_ALIASES BASH_CMDS'))
-		#declare -f
-		#declare | \
-		#	grep -vE '(^DBUS_SESSION_BUS_ADDRESS|^WAYLAND_|^FUNCNAME|^LANG|^ICEAUTHORITY*|^MEMORY_PRESSURE*|^LS_COLORS*|^HOST*|^WASMER*|^Fiction.*=|^chunk=|^newblock=|^out1=|^GPG|^SHELL|^SESSION_|^OS|^KDE_*|^GTK*|^XDG*|^XKB*|^PAM*|^KONSOLE*|^SSH_*|^QT_*|^PWD|^OLDPWD|^TERM|^HOME|^USER|^PATH|^BASH_*|^BASHOPTS|^EUID|^PPID|^SHELLOPTS|^UID)'
-		[[ -z "$1" ]] && cat <<EOF  >"$serverTmpDir/worker.sh";
+	cat <<EOF  >"$serverTmpDir/worker.sh";
 #!/bin/bash
 HEADERS=""
 trap 'rm "/dev/shm/.worker-\$uuid.in" "/dev/shm/.worker-\$uuid.out" "/dev/shm/.fiction_buf_\$uuid" 2>/dev/null' INT EXIT
