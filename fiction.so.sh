@@ -712,8 +712,8 @@ function fiction.respond() {
 		__fiction_responded=1
 		[[ "$routetype" != "file" ]] && [ -f "$filename" ] && rm "$filename"
 		_printRequestLog
-	else
-		_respondWithPayload "$BINARY_OUTPUT" >"$WORKER_FIFO"
+	#else
+		#_respondWithPayload "$BINARY_OUTPUT" >"$WORKER_FIFO"
 	fi
 	return 0
 }
@@ -1194,7 +1194,9 @@ _build() {
 		filename="$path/$type.html"
 		WORKER_OUT="$path/$type.html"
 		WORKER_FIFO="$path/$type.html"
-		"${func}" ${funcargs//\"/\\\"} &
+		set -x
+		to_file=1 "${func}" ${funcargs//\"/\\\"} &
+		set +x
 		pid=$!
 		s='-\|/'; i=0; while kill -0 $pid 2>/dev/null; do i=$(((i+1)%4)); printf "\r[${s:$i:1}] $route\r"; sleep .1; done
 		wait $pid
