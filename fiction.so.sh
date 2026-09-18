@@ -635,7 +635,7 @@ __htmlhelper() {
 	local result=""
 	if [[ "${output::6}" != '<html>' && "${output::15}" != '<!DOCTYPE html>' ]]; then
 	#set -x
-	declare -p FictionResponse FICTION_META
+	#declare -p FictionResponse FICTION_META
 		result="<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width, initial-scale=1.0'>${FictionResponse[head]}$FICTION_META</head>"
 		result+=$'\n'
 		[[ "${output}" == *"<body"* ]] && result+="$output" || result+="<body>$output</body>"
