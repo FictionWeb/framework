@@ -1278,11 +1278,11 @@ _modulesLoader() {
 			;;
 			shelljq)
 				[[ -v FictionModule[shelljq] ]] && continue
-				if [[ -f "$dir/index.sh" ]]; then
-					FictionModule[shelljq]="$dir/index.sh"
-					source "$dir/index.sh"
+				if [[ -f "$dir/shjq" ]]; then
+					FictionModule[shelljq]="$dir/shjq"
+					source "$dir/shjq"
 				else
-					_error "cannot find WASM module ($dir/index.sh)"
+					_error "cannot shelljq ($dir/shjq)"
 				fi
 			;;
 			*) 

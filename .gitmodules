@@ -1,0 +1,6 @@
+[submodule "modules/bashx"]
+	path = modules/bashx
+	url = https://github.com/FictionWeb/bashx
+[submodule "modules/shelljq"]
+	path = modules/shelljq
+	url = https://github.com/Tirito6626/shelljq
