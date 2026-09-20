@@ -312,6 +312,16 @@ function _spawn {
 	#[[ "${2::1}" ]] && echo "restarted '$1' ($!)"
 }
 
+_process_rss() {
+	_read_file proc "/proc/$1/status"
+	[[ "$proc" =~ VmRSS:(.*)kB ]] && IFS=$'\n\t ' read rss _ <<< "${BASH_REMATCH[1]}"
+	if ((rss > 1024)); then
+		builtin printf -v rss "%.2f MB" "${rss}e-3"
+	else
+		builtin printf -v rss "%.d KB" "${rss}"
+	fi
+}
+
 function _console {
 	while sleep 0.1; do
 		read -t 1 line;
@@ -328,31 +338,24 @@ function _console {
 				exec bash "$FICTION_PATH/fiction.so.sh" "$FICTION_MODE"
 				;;
 			s|stats|status)
-				_read_file proc "/proc/$$/status"
-				IFS="$orig_IFS"
-				#echo "$IFS"
-				#declare -p IFS
-				[[ "$proc" =~ VmRSS:(.*)kB ]] && read rss _ <<< "${BASH_REMATCH[1]}"
+				_process_rss "$$"
 				#echo "${BASH_REMATCH[1]} $rss $_"
-				if ((rss > 1024)); then
-					builtin printf -v size "%.2f MB" "${rss}e-3"
-				else
-					builtin printf -v size "%.d KB" "${size}"
-				fi
+
 				#set +x
 				read conns < "$serverTmpDir/.conns"
 				time_ms
 				local seconds=$(( (ms - init_time) / 1000))
 				parse_sec "$seconds"
 				echo "running for $human_readable_time"
-				echo "RSS: $size"
+				echo "RSS: $rss"
 				echo "total connections: ${conns:=0}"
-				echo "active jobs:"
+				echo "jobs:"
 				_parse_jobs && : >"$serverTmpDir/.jobs"
 				for pid in "${!jobs[@]}"; do
 					printf "%s" "- ${jobs[$pid]} ($pid)"
-					if [[ -f "/proc/${pid}/status" ]]; then 
-						printf "\n"
+					if [[ -f "/proc/${pid}/status" ]]; then
+						_process_rss "$pid"
+						printf " %s\n" "($rss)"
 						echo "$pid ${jobs[$pid]}" >>"$serverTmpDir/.jobs"
 					else
 						printf " %s\n" "(exited)"
@@ -1061,6 +1064,7 @@ function fiction.server() {
 	#set -x
 	#[[ "${Fiction[include_wasm]}" == true && "${Fiction[ssl.enabled]:=false}" == false ]] && _error "Running the website with WASM included on HTTP. Modern browsers will not allow WASM initialization from HTTP origin. In case it's a development server, consider using ncat for running a temporary HTTPS server." && return 1
 	trap clean EXIT INT;
+	BASH_ARGV0="fiction-server"
 	case "${Fiction[server.core]}" in
 		bash)
 			echo -n "Server address: ";
