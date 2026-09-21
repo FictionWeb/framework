@@ -234,15 +234,6 @@ function _spawn {
 								ms="${EPOCHREALTIME//[.,]/}"
 								worker_init_time="${ms::-3}"
 								fiction.worker "&${ACCEPT_FD}" "$worker" <&${ACCEPT_FD};
-								exec {ACCEPT_FD}>&-;
-								exec {ACCEPT_FD}<&-;
-								if [[ -f "$serverTmpDir/.conns" ]]; then 
-									read conns <"$serverTmpDir/.conns"
-									case "${conns:-0}" in
-										0) echo 1 > "$serverTmpDir/.conns" ;;
-										*) echo "$((conns + 1))" > "$serverTmpDir/.conns" ;;
-									esac
-								fi
 							} &
 						fi
 					done &
@@ -714,10 +705,24 @@ function fiction.respond() {
 	fi
 	#set -x
 	if [[ -z "$FICTION_BUILD" ]]; then 
-		[[ "${WORKER_FIFO::1}" == "&" ]] && _respondWithPayload "$BINARY_OUTPUT" >&"${WORKER_FIFO:1}" || _respondWithPayload "$BINARY_OUTPUT" >"$WORKER_FIFO" 
+		if [[ "${WORKER_FIFO::1}" == "&" ]]; then
+			WORKER_FIFO="${WORKER_FIFO:1}"
+			_respondWithPayload "$BINARY_OUTPUT" >&"${WORKER_FIFO}"
+			exec {WORKER_FIFO}>&-;
+			exec {WORKER_FIFO}<&-;
+		else
+			_respondWithPayload "$BINARY_OUTPUT" >"$WORKER_FIFO" 
+		fi
 		__fiction_responded=1
 		[[ "$routetype" != "file" ]] && [ -f "$filename" ] && rm "$filename"
 		_printRequestLog
+		if [[ -f "$serverTmpDir/.conns" ]]; then 
+			read conns <"$serverTmpDir/.conns"
+			case "${conns:-0}" in
+				0) echo 1 > "$serverTmpDir/.conns" ;;
+				*) echo "$((conns + 1))" > "$serverTmpDir/.conns" ;;
+			esac
+		fi
 	#else
 		#_respondWithPayload "$BINARY_OUTPUT" >"$WORKER_FIFO"
 	fi
@@ -1227,7 +1232,6 @@ _buildWorker() {
 HEADERS=""
 trap 'rm "/dev/shm/.worker-\$uuid.in" "/dev/shm/.worker-\$uuid.out" "/dev/shm/.fiction_buf_\$uuid" 2>/dev/null' INT EXIT
 read uuid < /proc/sys/kernel/random/uuid
-read conns < "$serverTmpDir/.conns" 2>/dev/null
 #declare -f >&2
 HEADERS=""
 mkfifo "/dev/shm/.worker-\$uuid.in"
@@ -1240,15 +1244,10 @@ while read -r val; do
 done
 [[ "\${value// }" -gt 1 ]] && { read -rn \${value// } -t1 data; [[ \${#data} > 1 ]] && HEADERS+="\${data//$'\r'/}"$'\n'; unset key value data; }
 [[ "\$NCAT_REMOTE_ADDR" ]] && REMOTE_ADDR="\$NCAT_REMOTE_ADDR" || REMOTE_ADDR="\$FICTION_PEERADDR"
-$([[ "$workerargs" ]] && echo 'set $workerargs')
 echo "\$uuid;\$REMOTE_ADDR" > $serverTmpDir/.workers
 echo "\$HEADERS" > "/dev/shm/.worker-\$uuid.out"
 
 cat "/dev/shm/.worker-\$uuid.in"
-case "\$conns" in
-	0) echo 1 > "$serverTmpDir/.conns" ;;
-	*) echo "\$((conns + 1))" > "$serverTmpDir/.conns" ;;
-esac
 
 EOF
 	chmod +x "$serverTmpDir/worker.sh";
