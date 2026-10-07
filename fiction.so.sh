@@ -1332,7 +1332,7 @@ _configParser() {
 		json_trim "$config" true true
 		[[ $? > 0 ]] && _error "failed to validate the configuration" && exit 1
 	fi
-	json_to_arr "$json_trim_output" Fiction "" "" "" true
+	json_to_arr "$json_trim_output" Fiction "" true
 	unset json_trim_output
 	Fiction[default_index]="${FICTION_PATH}pages/${Fiction[default_index]:=index.shx}"
 	readonly -A Fiction
