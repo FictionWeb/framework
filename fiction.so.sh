@@ -224,9 +224,7 @@ function _spawn {
 				else
 					[ ! -f "${FictionModule[accept]}" ] && _error "\`accept\` is not found in ${Fiction[path]}" && return 1;
 					enable -f "${FictionModule[accept]}" accept;
-					while true; do
-						#set -x
-						accept -b "$address" -r REMOTE_ADDR "$port";
+					while accept -b "$address" -r REMOTE_ADDR "$port"; do
 						if [[ -n "$ACCEPT_FD" ]]; then
 							read worker < /proc/sys/kernel/random/uuid
 							{
@@ -803,7 +801,7 @@ function fiction.worker() {
 							;;
 						"application/json")
 							[[ "${Fiction[body.application/json.trim]}" == true ]] && json_trim "${post_data}" true true
-							json_to_arr "${json_trim_output:-$post_data}" FictionRequestBody "" false true "${Fiction[body.application/json.raw]}"
+							json_to_arr "${json_trim_output:-$post_data}" FictionRequestBody "" "${Fiction[body.application/json.raw]}"
 							;;
 					esac
 				fi
