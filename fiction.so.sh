@@ -1,13 +1,34 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # The Fiction(R) Library, powered by insane people (C) 2025-2026
-shopt -s nullglob
+readonly EXEC_SHELL="$_"
 set -m
-if ! (return 0 2>/dev/null); then
-	FICTION_PATH="$PWD/"
-	readonly is_sourced=0
+if [[ "${EXEC_SHELL:: -3}" == "zsh" ]]; then
+	is_zsh=true
+	setopt ksh_arrays nullglob
+	emulate ksh
+	int_regex='^[-+]?[0-9]+\.?$'
+	num_regex='\[(-?[0-9])\]'
+	if [[ $ZSH_EVAL_CONTEXT =~ :file$ ]]; then
+		set -x
+		readonly is_sourced=1
+		FICTION_PATH="${(%):-%x}"
+		readonly FICTION_PATH="${FICTION_PATH//fiction.so.sh}"
+		set +x
+	else
+		readonly FICTION_PATH="$PWD/"
+		readonly is_sourced=0
+	fi
+	zmodload zsh/datetime
+	#: "${(%):-%x}"
 else
-	FICTION_PATH="${BASH_SOURCE//fiction.so.sh}"
-	readonly is_sourced=1
+	shopt -s nullglob
+	if ! (return 0 2>/dev/null); then
+		readonly FICTION_PATH="$PWD/"
+		readonly is_sourced=0
+	else
+		readonly FICTION_PATH="${BASH_SOURCE//fiction.so.sh}"
+		readonly is_sourced=1
+	fi
 fi
 ms="${EPOCHREALTIME//[.,]}"
 init_time="${ms::-3}"
@@ -20,7 +41,18 @@ _white=$'\e[38;5;255m'
 _bold=$'\e[1m'
 _gray=$'\e[38;5;240m'
 _nc=$'\e[0m'
-OUT_PATH="/dev/shm/.fiction_out"
+_is_macos=0
+# macOS (OSX)-specific adjustments
+if [[ "${OSTYPE::6}" == "darwin" ]]; then
+	# macOS doesn't have "shared memory" mount so we use /tmp instead
+	SHM_PATH="/tmp"
+	is_macos=1
+elif [[ ! -d /dev/shm ]]; then
+	SHM_PATH="/tmp"
+else
+	SHM_PATH="/dev/shm"
+fi
+OUT_PATH="$SHM_PATH/.fiction_out"
 [[ "$FICTION_NESTED" == true ]] && return
 declare -gA Fiction=(
 	[version]="v1.0.0-prerelease"
@@ -37,7 +69,7 @@ declare -gA FictionResponse=(
 declare -gA FictionRequest=()
 declare -gA FictionRequestHeaders FictionRequestQuery FictionRequestBody FictionRequestCookie FictionResponseHeaders FictionResponseCookie
 declare -gA FictionModule=( 
-	# Example on adding module: 
+	# Example on adding a module:
 	# FictionModule[bashx]="${Fiction[path]}/modules/bashx/bashx"
 )
 
@@ -281,12 +313,12 @@ function _spawn {
 			case "$worker" in
 				"") continue ;;
 			esac
-			OUT_PATH="/dev/shm/.fiction_buf_$worker"
+			OUT_PATH="$SHM_PATH/.fiction_buf_$worker"
     		{
 				ms="${EPOCHREALTIME//[.,]/}"
 				worker_init_time="${ms::-3}"
         		#printf "worker: %s\n" "$worker"
-        		fiction.worker "/dev/shm/.worker-$worker.in" "$worker" <"/dev/shm/.worker-$worker.out";
+        		fiction.worker "$SHM_PATH/.worker-$worker.in" "$worker" <"$SHM_PATH/.worker-$worker.out";
     		} &
 			_add_job $! "worker-$worker"
 		done &
@@ -302,13 +334,20 @@ function _spawn {
 }
 
 _process_rss() {
-	_read_file proc "/proc/$1/status"
-	[[ "$proc" =~ VmRSS:(.*)kB ]] && IFS=$'\n\t ' read rss _ <<< "${BASH_REMATCH[1]}"
-	if ((rss > 1024)); then
-		builtin printf -v rss "%.2f MB" "${rss}e-3"
+	if (( ! is_macos )); then
+		_read_file proc "/proc/$1/status"
+		[[ "$proc" =~ VmRSS:(.*)kB ]] && IFS=$'\n\t ' read rss _ <<< "${BASH_REMATCH[1]}"
+		if ((rss > 1024)); then
+			builtin printf -v rss "%.2f MB" "${rss}e-3"
+		else
+			builtin printf -v rss "%.d KB" "${rss}"
+		fi
 	else
-		builtin printf -v rss "%.d KB" "${rss}"
+		subshell proc ps -o %mem,rss -p "$1"
+		read rss _ <<< "$proc"
+		echo "$rss $proc"
 	fi
+
 }
 
 function _console {
@@ -324,12 +363,12 @@ function _console {
 				fi
 				restart=true clean
 
-				exec bash "$FICTION_PATH/fiction.so.sh" "$FICTION_MODE"
+				exec /usr/bin/env bash "$FICTION_PATH/fiction.so.sh" "${__args[@]}"
 				;;
 			s|stats|status)
 				_process_rss "$$"
 				#echo "${BASH_REMATCH[1]} $rss $_"
-
+				(( is_macos )) && continue
 				#set +x
 				read conns < "$serverTmpDir/.conns"
 				time_ms
@@ -342,6 +381,7 @@ function _console {
 				_parse_jobs && : >"$serverTmpDir/.jobs"
 				for pid in "${!jobs[@]}"; do
 					printf "%s" "- ${jobs[$pid]} ($pid)"
+					(( is_macos )) && continue
 					if [[ -f "/proc/${pid}/status" ]]; then
 						_process_rss "$pid"
 						printf " %s\n" "($rss)"
@@ -364,7 +404,7 @@ clean() {
 		if [[ "${#jobs[@]}" != 0 ]]; then
 			echo "Waiting for all jobs to exit... (${!jobs[@]})"
 			for pid in "${!jobs[@]}"; do
-				[ -f "/proc/$pid/status" ] || continue
+				#[ -f "/proc/$pid/status" ] || continue
 				kill "$pid"
 				wait "$pid"
 			done
@@ -414,16 +454,16 @@ _${1}_EOF
 
 function _mktmpDir() {
 	if [[ -z "$serverTmpDir" ]]; then
-	! pidof fiction >/dev/null && [ -d "/dev/shm/.fiction" ] && rm -rf /dev/shm/.fiction/* 2>&1 >/dev/null
-	local hex
-	subshell hex openssl rand -hex 16
-	hex="${hex##$'\n'}"
-	serverTmpDir="/tmp/.fiction/tmp_$hex"
- 
-		if ! mkdir -p "$serverTmpDir" 2>&1 >/dev/null; then
-			serverTmpDir="/dev/shm/.fiction/tmp_$hex"
+		which pidof >/dev/null 2>&1 && ! pidof fiction >/dev/null && [ -d "/dev/shm/.fiction" ] && rm -rf /dev/shm/.fiction/ >/dev/null 2>&1
+		local hex
+		subshell hex openssl rand -hex 16
+		hex="${hex##$'\n'}"
+		serverTmpDir="/tmp/.fiction/tmp_$hex"
+		if ! mkdir -p "$serverTmpDir" >/dev/null 2>&1; then
+			serverTmpDir="$FICTION_PATH/.fiction/tmp_$hex"
 			mkdir -p "$serverTmpDir"
 		fi
+		SHM_PATH="$serverTmpDir"
 	fi
 }
 
@@ -458,7 +498,7 @@ urldecode() {
 
 # https://gist.github.com/markusfisch/6110640
 uuidgen() {
-	cat /proc/sys/kernel/random/uuid
+	[ -f /proc/sys/kernel/random/uuid ] && cat /proc/sys/kernel/random/uuid || command uuidgen 2>/dev/null
 }
 
 fiction.response_code.set() {
@@ -733,7 +773,7 @@ function fiction.worker() {
 	WORKER_FIFO="$1"
 	#WORKER_FIFO2="/dev/shm/.worker-$2.out"
 	local worker_uuid="$2"
-	BASH_ARGV0="fiction-worker"
+	#BASH_ARGV0="fiction-worker"
 	#trap profiler DEBUG
 	local REQUEST_METHOD REQUEST_PATH HTTP_VERSION entry init_line
     read init_line 2>/dev/null || return
@@ -841,7 +881,7 @@ function fiction.cookie.set() {
 }
 
 
-declare -F fiction.404 >/dev/null || fiction.404() {
+[[ -z "$ZSH_VERSION" ]] && declare -F fiction.404 2>&1 >/dev/null || fiction.404() {
 #  INCLUDE_DOM=false
 #  Fiction[include_lucide]=false
 	FictionResponseHeaders=(['content-type']="text/html")
@@ -863,7 +903,7 @@ EOF
 	return
 }
 
-declare -F fiction.500 >/dev/null || fiction.500() {
+[[ -z "$ZSH_VERSION" ]] && declare -F fiction.500 2>&1 >/dev/null || fiction.500() {
 	handled_by="fiction.500"
 	FictionResponseHeaders=(['content-type']="text/html")
 	fiction.respond 500 <<- EOF
@@ -1067,7 +1107,7 @@ function fiction.server() {
 	#set -x
 	#[[ "${Fiction[include_wasm]}" == true && "${Fiction[ssl.enabled]:=false}" == false ]] && _error "Running the website with WASM included on HTTP. Modern browsers will not allow WASM initialization from HTTP origin. In case it's a development server, consider using ncat for running a temporary HTTPS server." && return 1
 	trap clean EXIT INT;
-	BASH_ARGV0="fiction-server"
+	#BASH_ARGV0="fiction-server"
 	case "${Fiction[server.core]}" in
 		bash)
 			echo -n "Server address: ";
@@ -1134,13 +1174,13 @@ _hotreload() {
 
 	if which inotifywait >/dev/null 2>&1; then
 		i=0
-		inotifywait -qm --event modify --format '%w' ${__files[@]} | while read -r hl_file; do
+		inotifywait -qm --event modify --format '%w' "${__files[@]}" | while read -r hl_file; do
 			((i == 1)) && i=0 && continue  
-			if [[ ! "$hl_file" =~ \.shx|\.bashx ]]; then 
+			#if [[ ! "$hl_file" =~ \.shx|\.bashx ]]; then 
 				source "$hl_file" __hotreload && printf "%s\n" "[$_green✓$_nc] Reloaded $hl_file" || printf "%s\n" "[${_red}x${_nc}] Failed to reload $hl_file"
-			else
-				BASHX_VERBOSE=true @import "$hl_file"; 
-			fi
+			#else
+			#	BASHX_VERBOSE=true @import "$hl_file"; 
+			#fi
 		done
 	else
 		_warn "inotify-tools package is not installed, Hot-Reload will use md5sum to compare files every ${Fiction[hot_reload.interval]:=2}s"
@@ -1156,11 +1196,11 @@ _hotreload() {
 				subshell hl_file2 md5sum "$hl_file"
 				[[ "$hl_file2" == "${_hl_files["$hl_file"]}" ]] && continue
 				printf "%s\n" "(hot-reload) Reloading $hl_file..."
-				if [[ ! "$hl_file" =~ \.shx|\.bashx ]]; then
+				#if [[ ! "$hl_file" =~ \.shx|\.bashx ]]; then
 					source "$hl_file" __hotreload && printf "%s\n" "[$_green✓$_nc] Reloaded $hl_file" || printf "%s\n" "[${_red}x${_nc}] Failed to reload $hl_file"
-				else
-					BASHX_VERBOSE=true @import "$hl_file"; 
-				fi
+				#else
+				#	BASHX_VERBOSE=true @import "$hl_file"; 
+				#fi
 				#[[ ${Fiction[core]} != bash ]] && _buildWorker
 				_hl_files["$hl_file"]="$hl_file2";
 			done
@@ -1226,14 +1266,14 @@ _build() {
 
 _buildWorker() {
 	cat <<EOF  >"$serverTmpDir/worker.sh";
-#!/bin/bash
+#!/usr/bin/env bash
 HEADERS=""
-trap 'rm "/dev/shm/.worker-\$uuid.in" "/dev/shm/.worker-\$uuid.out" "/dev/shm/.fiction_buf_\$uuid" 2>/dev/null' INT EXIT
-read uuid < /proc/sys/kernel/random/uuid
+trap 'rm "$SHM_PATH/.worker-\$uuid.in" "$SHM_PATH//.worker-\$uuid.out" "$SHM_PATH/.fiction_buf_\$uuid" 2>/dev/null' INT EXIT
+[ -f /proc/sys/kernel/random/uuid ] && read uuid < /proc/sys/kernel/random/uuid || uuid="\$SRANDOM"
 #declare -f >&2
 HEADERS=""
-mkfifo "/dev/shm/.worker-\$uuid.in"
-mkfifo "/dev/shm/.worker-\$uuid.out"
+mkfifo "$SHM_PATH/.worker-\$uuid.in"
+mkfifo "$SHM_PATH/.worker-\$uuid.out"
 while read -r val; do
 	val="\${val//$'\r'/}"
 	HEADERS+="\$val"$'\n'
@@ -1243,9 +1283,9 @@ done
 [[ "\${value// }" -gt 1 ]] && { read -rn \${value// } -t1 data; [[ \${#data} > 1 ]] && HEADERS+="\${data//$'\r'/}"$'\n'; unset key value data; }
 [[ "\$NCAT_REMOTE_ADDR" ]] && REMOTE_ADDR="\$NCAT_REMOTE_ADDR" || REMOTE_ADDR="\$FICTION_PEERADDR"
 echo "\$uuid;\$REMOTE_ADDR" > $serverTmpDir/.workers
-echo "\$HEADERS" > "/dev/shm/.worker-\$uuid.out"
+echo "\$HEADERS" > "$SHM_PATH/.worker-\$uuid.out"
 
-cat "/dev/shm/.worker-\$uuid.in"
+cat "$SHM_PATH/.worker-\$uuid.in"
 
 EOF
 	chmod +x "$serverTmpDir/worker.sh";
@@ -1356,7 +1396,24 @@ EOF
 #_configParser
 #exit
 if ! (return 0 2>/dev/null); then
+	declare -g __args=("$@")
 	case "$1" in
+	test|test-server|http-server)
+		function handleTestRequest() {
+			fiction.addMeta "<title>fiction-http-server</title>"
+			fiction.respond 200 << EOF
+<h1>Fiction http-server</h1>
+<p>If you're seeing this, it means that Fiction is reachable and working with your selected network configuration</p>
+EOF
+		}
+		_mktmpDir
+		_modulesLoader "$FICTION_PATH/modules/shelljq"
+		FICTION_MODE="development"
+		_configParser
+		fiction.serve "/" handleTestRequest "text/html" >/dev/null
+		echo "Starting a test server..."
+		fiction.server
+		;;
 	module)
 		_modulesLoader
 		module="${FictionModule[$2]}"
@@ -1413,7 +1470,7 @@ else
 			_build
 			exit
 		fi
-		if [[ "${BASH_SOURCE[-1]}" =~ .shx|.bashx ]]; then
+		if [[ "${BASH_SOURCE[-1]}" =~ .shx ]]; then
 				FICTION_NESTED=true
 				bashx "${BASH_SOURCE[-1]}"
 				exit
