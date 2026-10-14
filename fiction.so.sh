@@ -1,26 +1,25 @@
 #!/usr/bin/env bash
 # The Fiction(R) Library, powered by insane people (C) 2025-2026
-readonly EXEC_SHELL="$_"
 set -m
-if [[ "${EXEC_SHELL:: -3}" == "zsh" ]]; then
-	is_zsh=true
+if [[ "$ZSH_VERSION" ]]; then
+	is_zsh=1
 	setopt ksh_arrays nullglob
 	emulate ksh
 	int_regex='^[-+]?[0-9]+\.?$'
 	num_regex='\[(-?[0-9])\]'
 	if [[ $ZSH_EVAL_CONTEXT =~ :file$ ]]; then
-		set -x
 		readonly is_sourced=1
 		FICTION_PATH="${(%):-%x}"
 		readonly FICTION_PATH="${FICTION_PATH//fiction.so.sh}"
-		set +x
 	else
 		readonly FICTION_PATH="$PWD/"
 		readonly is_sourced=0
 	fi
-	zmodload zsh/datetime
+	zmodload zsh/datetime zsh/mathfunc
 	#: "${(%):-%x}"
+	init_time="$(( int(EPOCHREALTIME * 1000) ))"
 else
+	is_zsh=0
 	shopt -s nullglob
 	if ! (return 0 2>/dev/null); then
 		readonly FICTION_PATH="$PWD/"
@@ -29,9 +28,10 @@ else
 		readonly FICTION_PATH="${BASH_SOURCE//fiction.so.sh}"
 		readonly is_sourced=1
 	fi
+	ms="${EPOCHREALTIME//[.,]}"
+	init_time="${ms::-3}"
 fi
-ms="${EPOCHREALTIME//[.,]}"
-init_time="${ms::-3}"
+
 orig_IFS=$'\t\n '
 [[ -v FICTION_META ]] || FICTION_META=""
 _green=$'\e[38;5;2m'
@@ -97,66 +97,26 @@ declare -gA status_codes=(
 	[502]="505 Gateway Timeout"
 )
 
-# Code structure
-# - subshell
-# - time_ms
-# - parse_sec
-# - catch_job
-# - _spawn
-# - _console
-# - clean
-# - _hash
-# - _encode
-# - _decode
-# - _regex
-# - @cache
-# - @prerender
-# - mktmpDir
-# - _error
-# - _warn
-# - urldecode 
-# - uuidgen
-# - fiction.response_code.set
-# - rename_fn
-# - fiction.router
-# - fiction.worker
-# - fiction.addServerAction
-# - fiction.addMeta
-# - fiction.header.set
-# - fiction.session
-# - fiction.response.cookie.set
-# - fiction.session.set
-# - fiction.respond
-# - fiction.404
-# - fiction.500
-# - fiction
-# - fiction.serve
-# - fiction.serveDynamic
-# - fiction.serveCGI
-# - fiction.redirect
-# - fiction.serveFile
-# - fiction.serveDir
-# - fiction.server
-# - _hotreload
-# - _build
-# - _buildWorker
-# - _modulesLoader
-# - _helpmsg
-# - declare_objects
-
 # Helper functions
 function subshell() {
 	local var="$1"
 	#printf -v "$var" "$(${@:2})"
 #  return
-	${@:2} >"$OUT_PATH"
-	read -r -d $'\0' $var <"$OUT_PATH"
+	"${@:2}" >"$OUT_PATH"
+	if ((is_zsh)); then
+		read -r $var <"$OUT_PATH"
+	else
+		read -r -d $'\0' $var <"$OUT_PATH"
+	fi
 }
 
-function time_ms {
-	ms="${EPOCHREALTIME//[.,]/}"
-	ms="${ms::-3}"
-}
+if (( is_zsh )); then 
+	function time_ms { ms="$(( int(EPOCHREALTIME * 1000) ))"; }
+	function _to_lowercase { local var="${(P)1}"; printf -v "$1" "%s" "${var:l}"; }
+else
+	function time_ms { ms="${EPOCHREALTIME//[.,]/}"; ms="${ms::-3}"; }
+	function _to_lowercase { local var="${!1}"; printf -v "$1" "%s" "${var,,}"; }
+fi
 
 function parse_sec {
 	T="$1"
@@ -248,27 +208,53 @@ function _spawn {
 		local address="${Fiction[server.address]}" port="${Fiction[server.port]}"
 		local ssl_enabled="${Fiction[server.ssl.enabled]:-false}" 
 		case "${Fiction[server.core]:-socat}" in
-			bash)
+			bash|zsh|native)
 				IFS="$orig_IFS"
 				if [[ "$ssl_enabled" == true ]]; then
-					_error "HTTPS isn't available in development core. Use ncat or socat for HTTPS server"
+					_error "HTTPS isn't available with native core. Use ncat or socat for HTTPS server"
 					exit 1
 				else
-					[ ! -f "${FictionModule[accept]}" ] && _error "\`accept\` is not found in ${Fiction[path]}" && return 1;
-					enable -f "${FictionModule[accept]}" accept;
-                    local worker_fd
-					while accept -b "$address" -r REMOTE_ADDR -v worker_fd "$port"; do
-						if [[ -n "$worker_fd" ]]; then
-							read worker < /proc/sys/kernel/random/uuid
-							{
-								ms="${EPOCHREALTIME//[.,]/}"
-								worker_init_time="${ms::-3}"
+					local worker worker_fd
+					if (( ! is_zsh )); then
+						[ ! -f "${FictionModule[accept]}" ] && _error "\`accept\` is not found in ${Fiction[path]}" && return 1;
+						enable -f "${FictionModule[accept]}" accept;
+						while true; do
+							accept -b "$address" -r REMOTE_ADDR -v worker_fd "$port" || break
+							if [[ -n "$worker_fd" ]]; then
+								uuidgen_to worker
+								echo ok
+								time_ms
+								worker_init_time="$ms"
 								fiction.worker "&${worker_fd}" "$worker" <&${worker_fd};
-							} &
-                           wait
-                           exec {worker_fd}>&-
-						fi
-					done &
+                           		#exec {worker_fd}>&-
+							fi
+						done &
+					else
+						zmodload zsh/net/tcp;
+						local reply listen_fd REPLY
+						{ 
+						ztcp -lv "$port"
+						listen_fd="$REPLY"
+						while ztcp -av "$listen_fd"; do
+							set -x
+							#|| break
+							worker_fd="$REPLY"
+								declare -p REPLY
+								#REMOTE_ADDR="${reply[1]}"
+								uuidgen_to worker
+								time_ms
+								worker_init_time="${ms}"
+								set +x
+								fiction.worker "&${worker_fd}" "$worker" <&${worker_fd};
+								__fiction_responded=0
+                           		set -x
+								#ztcp -cfv "$worker_fd"
+								#exec {worker_fd}>&-
+						done
+						ztcp -c "$listen_fd" 
+						} &
+						#set +x
+					fi
 					_add_job "$!" "$1"
 				fi
 				;;
@@ -317,8 +303,8 @@ function _spawn {
 			esac
 			OUT_PATH="$SHM_PATH/.fiction_buf_$worker"
     		{
-				ms="${EPOCHREALTIME//[.,]/}"
-				worker_init_time="${ms::-3}"
+				time_ms
+				worker_init_time="${ms}"
         		#printf "worker: %s\n" "$worker"
         		fiction.worker "$SHM_PATH/.worker-$worker.in" "$worker" <"$SHM_PATH/.worker-$worker.out";
     		} &
@@ -345,16 +331,16 @@ _process_rss() {
 			builtin printf -v rss "%.d KB" "${rss}"
 		fi
 	else
-		subshell proc ps -o %mem,rss -p "$1"
-		read rss _ <<< "$proc"
-		echo "$rss $proc"
+		subshell rss ps -o rss= -p "$1"
+		rss+='.0'
+		rss="$(( rss / 1024 ))"
+		builtin printf -v rss '%.2f MB' "$rss"
 	fi
 
 }
 
 function _console {
-	while sleep 0.1; do
-		read -t 1 line;
+	while read line; do
 		case "$line" in
 			exit|quit|q|stop) exit ;;
 			i|info) fiction ;;
@@ -364,13 +350,16 @@ function _console {
 					continue
 				fi
 				restart=true clean
-
-				exec /usr/bin/env bash "$FICTION_PATH/fiction.so.sh" "${__args[@]}"
+				if (( is_zsh )); then 
+					exec /usr/bin/env zsh "$FICTION_PATH/fiction.so.sh" "${__args[@]}"
+				else
+					exec /usr/bin/env bash "$FICTION_PATH/fiction.so.sh" "${__args[@]}"
+				fi
 				;;
 			s|stats|status)
 				_process_rss "$$"
 				#echo "${BASH_REMATCH[1]} $rss $_"
-				(( is_macos )) && continue
+				#(( is_macos )) && continue
 				#set +x
 				read conns < "$serverTmpDir/.conns"
 				time_ms
@@ -383,8 +372,8 @@ function _console {
 				_parse_jobs && : >"$serverTmpDir/.jobs"
 				for pid in "${!jobs[@]}"; do
 					printf "%s" "- ${jobs[$pid]} ($pid)"
-					(( is_macos )) && continue
-					if [[ -f "/proc/${pid}/status" ]]; then
+					#(( is_macos )) && continue
+					if (( is_macos )) || [[ -f "/proc/${pid}/status" ]]; then
 						_process_rss "$pid"
 						printf " %s\n" "($rss)"
 						echo "$pid ${jobs[$pid]}" >>"$serverTmpDir/.jobs"
@@ -413,34 +402,6 @@ clean() {
 		fi	
 	} 2>/dev/null
 	[[ "$restart" == true ]] || exit
-}
-
-function @cache() {
-	[ -z "$(declare -F "$1")" ] && return
-	while declare -f "$1" | grep -q "{cache}"; do
-	local CACHEBLOCK_BEGIN=0
-	local CACHEBLOCK_END=0
-	local linenum=1
-	while IFS= read -r line; do
-		if [[ "$line" == *"{cache}"* ]]; then
-		CACHEBLOCK_BEGIN="$((linenum + 1))"
-		continue
-		elif [[ "$line" == *"{/cache}"* ]]; then
-		CACHEBLOCK_END="$linenum"
-		break
-		fi
-
-		linenum=$((linenum + 1))
-	done <<<"$(declare -f "$1")"
-
-	local CACHE_DATA="echo \"$(eval $(declare -f "$1" | sed -n "${CACHEBLOCK_BEGIN},${CACHEBLOCK_END}p") | sed 's+"+\\\\"+g')\""
-	eval "$(declare -f "$1" | awk -v start="$(($CACHEBLOCK_BEGIN - 1))" -v end="$(($CACHEBLOCK_END + 1))" -v r="$CACHE_DATA" 'NR < start { print; next } NR == start { split(r, a, "\n"); for (i in a) print a[i]; next } NR > end')"
-	done
-
-	if [ -z "$DO_NOT_RERUN" ] && subshell func declare -F "$1" && [ -n "$func" ]; then
-	DO_NOT_RERUN=1 @cache "\\$1"
-	return
-	fi
 }
 
 function @prerender {
@@ -503,8 +464,16 @@ uuidgen() {
 	[ -f /proc/sys/kernel/random/uuid ] && cat /proc/sys/kernel/random/uuid || command uuidgen 2>/dev/null
 }
 
+uuidgen_to() {
+	if [ -f /proc/sys/kernel/random/uuid ]; then 
+		_read_file "$1" /proc/sys/kernel/random/uuid
+	else
+		subshell "$1" command uuidgen 2>/dev/null
+	fi
+}
+
 fiction.response_code.set() {
-	FictionResponse["status"]="${status_codes[${1:-200}]:-$1}"
+	FictionResponse[status]="${status_codes[${1:-200}]:-$1}"
 }
 
 rename_fn() {
@@ -593,10 +562,15 @@ function fiction.router() {
 	fi
 }
 
+
 _respondWithPayload() {
-	printf '%s %s\n' "HTTP/1.1" "${FictionResponse["status"]}"
+	printf '%s %s\n' "HTTP/1.1" "${FictionResponse[status]}"
 	if [[ "$routetype" != "cgi" ]]; then
-		for key in "${!FictionResponseHeaders[@]}"; do printf '%s: %s\n' "${key,,}" "${FictionResponseHeaders[$key]}"; done
+		if (( is_zsh )); then 
+			for key in "${(k)FictionResponseHeaders[@]}"; do printf '%s: %s\n' "${key:l}" "${FictionResponseHeaders[$key]}"; done
+		else
+			for key in "${!FictionResponseHeaders[@]}"; do printf '%s: %s\n' "${key,,}" "${FictionResponseHeaders[$key]}"; done
+		fi
 		for value in "${FictionResponseCookie[@]}"; do printf 'set-cookie: %s\n' "$value"; done
 		(( ! empty_body )) && printf "\n"
 	fi
@@ -605,9 +579,9 @@ _respondWithPayload() {
 }
 
 _printRequestLog() {
-		time_ms
+	time_ms
 	local time2="$ms"
-
+	local timestamp=''
 	local time=$((time2-worker_init_time))
 	if ((time < 150)); then
 		time="${_green}${time}${_nc}ms"
@@ -623,36 +597,47 @@ _printRequestLog() {
 	else 
 		size="$size B"
 	fi
-	case "${FictionResponse[status]::3}" in
-		2[0-9][0-9]) local status="${_green}${FictionResponse[status]}${_nc}" ;;
-		3[0-9][0-9]) local status="${_yellow}${FictionResponse[status]}${_nc}" ;;
-		4[0-9][0-9]|5[0-9][0-9]) local status="${_red}${FictionResponse[status]}${_nc}" ;;
-		*) status="${FictionResponse[status]}"
+	local http_status="${FictionResponse[status]}"
+	#echo "${FictionResponse[status]}"
+	case "${http_status::3}" in
+		2[0-9][0-9]) local http_status="${_green}${http_status}${_nc}" ;;
+		3[0-9][0-9]) local http_status="${_yellow}{http_status}${_nc}" ;;
+		4[0-9][0-9]|5[0-9][0-9]) local http_status="${_red}${http_status}${_nc}" ;;
 	esac
-	[[ "${Fiction[logs.timestamp]}" == true ]] && builtin printf "${_gray}%(%d/%m/%y %H:%M:%S)T${_nc} "
+	
+	if [[ "${Fiction[logs.timestamp]}" == true ]]; then 
+		(( is_zsh )) && strftime -s timestamp "${_gray}%d/%m/%y %H:%M:%S${_nc} " "$EPOCHSECONDS" || builtin printf -v timestamp "${_gray}%(%d/%m/%y %H:%M:%S)T${_nc} "
+	fi
+
 	if [[ ${FICTION_MODE} == development ]]; then
-		cat << EOF >&2
-$HTTP_VERSION $REQUEST_METHOD $REQUEST_PATH $status in $time ($size)
-Handled by: $handled_by
-EOF
+		echo "${timestamp}$HTTP_VERSION $REQUEST_METHOD $REQUEST_PATH $http_status in $time ($size)
+Handled by: $handled_by" >&2
 		[[ "${Fiction[logs.address]:-true}" == true ]] && printf "%s\n" "Address: ${FictionRequestHeaders[x-forwarded-for]:-${FictionRequest[addr]}}"
 
 		if [[ "${Fiction[logs.request_headers]:-false}" == true ]]; then
 			printf "%s\n" "Headers: "
-			for key in ${!FictionRequestHeaders[@]}; do 
-				printf "< ${_bold}%s${_nc}: %s\n" "${key,,}" "${FictionRequestHeaders[$key]}"
-			done
+			if ((is_zsh)); then
+				for key in "${(k)FictionRequestHeaders[@]}"; do
+					_to_lowercase key
+					printf "< ${_bold}%s${_nc}: %s\n" "${key}" "${FictionRequestHeaders[$key]}"
+				done
+			else
+				for key in "${!FictionRequestHeaders[@]}"; do
+					_to_lowercase key
+					printf "< ${_bold}%s${_nc}: %s\n" "${key}" "${FictionRequestHeaders[$key]}"
+				done
+			fi
 		fi
 		
 		if [[ "${Fiction[logs.response]}" == true ]]; then
 			printf "\n"
-			printf '> %s %s\n' "HTTP/1.1" "$status"
-			for key in "${!FictionResponseHeaders[@]}"; do printf "> ${_bold}%s${_nc}: %s\n" "${key,,}" "${FictionResponseHeaders[$key]}"; done
+			printf '> %s %s\n' "HTTP/1.1" "$http_status"
+			for key in "${!FictionResponseHeaders[@]}"; do _to_lowercase key; printf "> ${_bold}%s${_nc}: %s\n" "${key}" "${FictionResponseHeaders[$key]}"; done
 			for value in "${FictionResponseCookie[@]}"; do printf '> set-cookie: %s\n' "$value"; done
 			(( ! empty_body )) && printf "\n"
 		fi
 	else
-			#printf "%s" "${_gray}${timestamp}${_nc} "
+			printf "%s" "$timestamp"
 			[[ "${Fiction[logs.address]:-true}" == true ]] && printf "%s" "${FictionRequestHeaders[x-forwarded-for]:-${FictionRequest[addr]}}"
 			printf "%s\n" " $HTTP_VERSION $REQUEST_PATH $status $time"
 	fi
@@ -748,8 +733,8 @@ function fiction.respond() {
 		if [[ "${WORKER_FIFO::1}" == "&" ]]; then
 			WORKER_FIFO="${WORKER_FIFO:1}"
 			_respondWithPayload "$BINARY_OUTPUT" >&"${WORKER_FIFO}"
-			exec {WORKER_FIFO}>&-;
-			exec {WORKER_FIFO}<&-;
+			(( is_zsh )) && ztcp -cf "$worker_fd" || exec {WORKER_FIFO}>&-;
+			#exec {WORKER_FIFO}<&-;
 		else
 			_respondWithPayload "$BINARY_OUTPUT" >"$WORKER_FIFO" 
 		fi
@@ -780,7 +765,11 @@ function fiction.worker() {
 	local REQUEST_METHOD REQUEST_PATH HTTP_VERSION entry init_line
     read init_line 2>/dev/null || return
     init_line="${init_line//$'\r'}"
-	[[ "$init_line" =~ HTTP/[0-9]\.?[0-9]? ]] && HTTP_VERSION="${BASH_REMATCH[0]}" || return
+	if (( is_zsh )); then 
+		[[ "$init_line" =~ \(HTTP/[0-9]\.?[0-9]?\) ]] && HTTP_VERSION="${match[0]}" || return
+	else
+		[[ "$init_line" =~ HTTP/[0-9]\.?[0-9]? ]] && HTTP_VERSION="${BASH_REMATCH[0]}" || return
+	fi
     init_line="${init_line/$HTTP_VERSION}"
     IFS=' ' read REQUEST_METHOD REQUEST_PATH <<< "$init_line"
 	[[ -z "$REQUEST_METHOD" || -z "$REQUEST_PATH" ]] && return
@@ -791,25 +780,29 @@ function fiction.worker() {
 		[addr]="$REMOTE_ADDR"
 	)
 	local line _h
+	#set -x
 	while read -r line; do
 		line="${line%%$'\r'}"
 		[[ -z "$line" ]] && break
 		_h="${line%%:*}"
-		FictionRequestHeaders["${_h,,}"]="${line#*: }"
+		_to_lowercase _h
+		FictionRequestHeaders[$_h]="${line#*: }"
 	done
+	#set +x
 	local entry key value
 	IFS='?' read -r REQUEST_PATH get <<<"$REQUEST_PATH"
 	subshell get urldecode "$get"
 	IFS='#' read -r REQUEST_PATH _ <<<"$REQUEST_PATH"
 
 	if [[ "${get::1}" != '' ]]; then 
-		IFS='&' read -ra data <<<"$get"
+		((is_zsh)) && IFS='&' read -rA data <<<"$get" || IFS='&' read -ra data <<<"$get"
 		for entry in "${data[@]}"; do
-			FictionRequestQuery["${entry%%=*}"]="${entry#*=}"
+			FictionRequestQuery[${entry%%=*}]="${entry#*=}"
 		done
 	fi
 
 	if [ -n "${FictionRequestHeaders["Cookie"]}" ]; then
+		((is_zsh)) &&  IFS=';' read -rA cookie <<<"${FictionRequestHeaders["cookie"]}" || \ 
 		IFS=';' read -ra cookie <<<"${FictionRequestHeaders["cookie"]}"
 		#((${#cookie[@]} < 1 )) 
 		cookie+=( ${FictionRequestHeaders["cookie"]//;} )
@@ -861,7 +854,7 @@ function fiction.worker() {
 		_error "'$handled_by' provides no response status, falling back to 500"; 
 		fiction.500
 	fi
-	unset status handled_by routetype size time
+	#unset status handled_by routetype size time
 	#exit
 }
 
@@ -1075,6 +1068,12 @@ function fiction.serveDir() {
 	fi
 }
 
+# Source - https://stackoverflow.com/a/28804252
+# Posted by Tino, modified by community. See post 'Timeline' for change history
+# Retrieved 2026-10-14, License - CC BY-SA 4.0
+
+_timeout() { ( set +b; sleep "$1" & "${@:2}" & wait -n; r=$?; kill -9 `jobs -p`; exit $r; ) }
+
 
 function fiction.server() {
 	[[ "$FICTION_BUILD" || "$FICTION_HOTRELOAD" ]] && return
@@ -1092,7 +1091,7 @@ function fiction.server() {
 		echo "$$" > "$FICTION_PATH/fiction.lock"
 	fi
 
-	if timeout 0.1 bash -c "</dev/tcp/$address/$port &>/dev/null" 2>/dev/null; then
+	if lsof -s tcp:listen -i tcp:8080 -P -n >/dev/null; then
 		_error "cannot bind on $address:$port: Address already in use"
 		return 1
 	fi
@@ -1111,13 +1110,13 @@ function fiction.server() {
 	trap clean EXIT INT;
 	#BASH_ARGV0="fiction-server"
 	case "${Fiction[server.core]}" in
-		bash)
+		bash|zsh|native)
 			echo -n "Server address: ";
 			[[ "$port" = 80 ]] && \
 					echo -n "http://$address" || \
 					echo -n "http://$address:$port";
 			echo " (${FICTION_MODE:-${FICTION_MODE}} mode)";
-			trap catch_job SIGCHLD
+			#trap catch_job SIGCHLD
 			echo 0 > "$serverTmpDir/.conns"
 			_spawn 'network listener'
 			time_ms
@@ -1128,7 +1127,7 @@ function fiction.server() {
 		nc | netcat | ncat | socat)
 			_buildWorker
 			echo -n "Server address: ";
-			if "${Fiction[server.ssl.enabled]:=false}"; then
+			if is_true "${Fiction[server.ssl.enabled]:=false}"; then
 				[[ "$port" = 443 ]] && \
 					echo -n "https://$address" || \
 					echo -n "https://$address:$port";
@@ -1312,6 +1311,7 @@ _modulesLoader() {
 				fi
 			;;
 			bashx)
+				(( is_zsh )) && continue
 				[[ -v FictionModule[bashx] ]] && continue
 				if [[ -f "$dir/bashx" ]]; then
 					FictionModule[bashx]="$dir/bashx"
@@ -1374,7 +1374,17 @@ _configParser() {
 		json_trim "$config" true true
 		[[ $? > 0 ]] && _error "failed to validate the configuration" && exit 1
 	fi
-	json_to_arr "$json_trim_output" Fiction "" true
+	#set -x
+	json_to_arr "$json_trim_output" Fiction "" true true
+	#set +x
+	#set -x
+	if (( is_zsh )); then 
+		local ver="${Fiction[version]}"
+		eval "$json_to_arr_output"
+		Fiction[version]="$ver"
+		Fiction[path]="$FICTION_PATH"
+	fi
+	#declare -p1 Fiction
 	unset json_trim_output
 	Fiction[default_index]="${FICTION_PATH}pages/${Fiction[default_index]:=index.shx}"
 	readonly -A Fiction
@@ -1397,7 +1407,7 @@ EOF
 #_modulesLoader /home/tirito/fiction/framework/modules/shelljq
 #_configParser
 #exit
-if ! (return 0 2>/dev/null); then
+if (( ! is_sourced )); then
 	declare -g __args=("$@")
 	case "$1" in
 	test|test-server|http-server)
