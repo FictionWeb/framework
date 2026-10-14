@@ -256,16 +256,17 @@ function _spawn {
 				else
 					[ ! -f "${FictionModule[accept]}" ] && _error "\`accept\` is not found in ${Fiction[path]}" && return 1;
 					enable -f "${FictionModule[accept]}" accept;
-					while accept -b "$address" -r REMOTE_ADDR "$port"; do
-						if [[ -n "$ACCEPT_FD" ]]; then
+                    local worker_fd
+					while accept -b "$address" -r REMOTE_ADDR -v worker_fd "$port"; do
+						if [[ -n "$worker_fd" ]]; then
 							read worker < /proc/sys/kernel/random/uuid
-							ls -l /proc/$$/fd
 							{
-								#set -x
 								ms="${EPOCHREALTIME//[.,]/}"
 								worker_init_time="${ms::-3}"
-								fiction.worker "&${ACCEPT_FD}" "$worker" <&${ACCEPT_FD};
+								fiction.worker "&${worker_fd}" "$worker" <&${worker_fd};
 							} &
+                           wait
+                           exec {worker_fd}>&-
 						fi
 					done &
 					_add_job "$!" "$1"
