@@ -259,6 +259,7 @@ function _spawn {
 					while accept -b "$address" -r REMOTE_ADDR "$port"; do
 						if [[ -n "$ACCEPT_FD" ]]; then
 							read worker < /proc/sys/kernel/random/uuid
+							ls -l /proc/$$/fd
 							{
 								#set -x
 								ms="${EPOCHREALTIME//[.,]/}"
