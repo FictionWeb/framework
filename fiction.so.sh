@@ -3,7 +3,7 @@
 set -m
 if [[ "$ZSH_VERSION" ]]; then
 	is_zsh=1
-	setopt ksh_arrays nullglob
+	setopt ksh_arrays nullglob bash_rematch
 	emulate ksh
 	int_regex='^[-+]?[0-9]+\.?$'
 	num_regex='\[(-?[0-9])\]'
@@ -15,7 +15,7 @@ if [[ "$ZSH_VERSION" ]]; then
 		readonly FICTION_PATH="$PWD/"
 		readonly is_sourced=0
 	fi
-	zmodload zsh/datetime zsh/mathfunc
+	zmodload zsh/datetime zsh/mathfunc zsh/parameter
 	#: "${(%):-%x}"
 	init_time="$(( int(EPOCHREALTIME * 1000) ))"
 else
@@ -222,34 +222,30 @@ function _spawn {
 							accept -b "$address" -r REMOTE_ADDR -v worker_fd "$port" || break
 							if [[ -n "$worker_fd" ]]; then
 								uuidgen_to worker
-								echo ok
 								time_ms
 								worker_init_time="$ms"
 								fiction.worker "&${worker_fd}" "$worker" <&${worker_fd};
                            		#exec {worker_fd}>&-
-							fi
+							fi &
+							exec {WORKER_FIFO}>&-;
 						done &
 					else
 						zmodload zsh/net/tcp;
 						local reply listen_fd REPLY
 						{ 
-						ztcp -lv "$port"
+						ztcp -l "$port"
 						listen_fd="$REPLY"
-						while ztcp -av "$listen_fd"; do
-							set -x
-							#|| break
+						while ztcp -a "$listen_fd"; do
 							worker_fd="$REPLY"
-								declare -p REPLY
 								#REMOTE_ADDR="${reply[1]}"
+							{	
 								uuidgen_to worker
 								time_ms
 								worker_init_time="${ms}"
-								set +x
 								fiction.worker "&${worker_fd}" "$worker" <&${worker_fd};
 								__fiction_responded=0
-                           		set -x
-								#ztcp -cfv "$worker_fd"
-								#exec {worker_fd}>&-
+							} &
+								ztcp -cf "$worker_fd"
 						done
 						ztcp -c "$listen_fd" 
 						} &
@@ -661,7 +657,8 @@ __htmlhelper() {
 		result+=$'\n'
 		[[ "${Fiction[plugins@v]}" == *"lucide-icons"* ]] && result+='<script>lucide.createIcons();</script>'
 		result+='</html>'
-		set +x
+		FictionResponse[meta]=''
+		FICTION_META=''
 		[[ -n "$to_file" ]] && echo "$result" >"$file" || output="$result"
 	fi
 	return 0
@@ -765,11 +762,7 @@ function fiction.worker() {
 	local REQUEST_METHOD REQUEST_PATH HTTP_VERSION entry init_line
     read init_line 2>/dev/null || return
     init_line="${init_line//$'\r'}"
-	if (( is_zsh )); then 
-		[[ "$init_line" =~ \(HTTP/[0-9]\.?[0-9]?\) ]] && HTTP_VERSION="${match[0]}" || return
-	else
-		[[ "$init_line" =~ HTTP/[0-9]\.?[0-9]? ]] && HTTP_VERSION="${BASH_REMATCH[0]}" || return
-	fi
+	[[ "$init_line" =~ HTTP/[0-9]\.?[0-9]? ]] && HTTP_VERSION="${BASH_REMATCH[0]}" || return
     init_line="${init_line/$HTTP_VERSION}"
     IFS=' ' read REQUEST_METHOD REQUEST_PATH <<< "$init_line"
 	[[ -z "$REQUEST_METHOD" || -z "$REQUEST_PATH" ]] && return
