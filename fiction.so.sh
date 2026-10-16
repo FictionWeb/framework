@@ -220,14 +220,12 @@ function _spawn {
 						enable -f "${FictionModule[accept]}" accept;
 						while true; do
 							accept -b "$address" -r REMOTE_ADDR -v worker_fd "$port" || break
-							if [[ -n "$worker_fd" ]]; then
-								uuidgen_to worker
-								time_ms
-								worker_init_time="$ms"
-								fiction.worker "&${worker_fd}" "$worker" <&${worker_fd};
-                           		#exec {worker_fd}>&-
-							fi &
-							exec {WORKER_FIFO}>&-;
+							uuidgen_to worker
+							time_ms
+							worker_init_time="$ms"
+							( fiction.worker "&${worker_fd}" "$worker" <&${worker_fd}; )
+                           	exec {worker_fd}>&-
+							#exec {WORKER_FIFO}>&-;
 						done &
 					else
 						zmodload zsh/net/tcp;
@@ -237,15 +235,12 @@ function _spawn {
 						listen_fd="$REPLY"
 						while ztcp -a "$listen_fd"; do
 							worker_fd="$REPLY"
-								#REMOTE_ADDR="${reply[1]}"
-							{	
-								uuidgen_to worker
-								time_ms
-								worker_init_time="${ms}"
-								fiction.worker "&${worker_fd}" "$worker" <&${worker_fd};
-								__fiction_responded=0
-							} &
-								ztcp -cf "$worker_fd"
+							#REMOTE_ADDR="${reply[1]}"
+							uuidgen_to worker
+							time_ms
+							worker_init_time="${ms}"
+							( fiction.worker "&${worker_fd}" "$worker" <&${worker_fd}; )
+							ztcp -cf "$worker_fd"
 						done
 						ztcp -c "$listen_fd" 
 						} &
