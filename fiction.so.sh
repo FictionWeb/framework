@@ -628,9 +628,9 @@ Handled by: $handled_by" >&2
 			(( ! empty_body )) && printf "\n"
 		fi
 	else
-			printf "%s" "$timestamp"
-			[[ "${Fiction[logs.address]:-true}" == true ]] && printf "%s" "${FictionRequestHeaders[x-forwarded-for]:-${FictionRequest[addr]}}"
-			printf "%s\n" " $HTTP_VERSION $REQUEST_PATH $status $time"
+		printf "%s" "$timestamp"
+		[[ "${Fiction[logs.address]:-true}" == true ]] && printf "%s" "${FictionRequestHeaders[x-forwarded-for]:-${FictionRequest[addr]}}"
+		printf "%s\n" " $HTTP_VERSION $REQUEST_PATH $http_status $time"
 	fi
 }
 
@@ -650,7 +650,6 @@ __htmlhelper() {
 		result+=$'\n'
 		[[ "${output}" == *"<body"* ]] && result+="$output" || result+="<body>$output</body>"
 		result+=$'\n'
-		[[ "${Fiction[plugins@v]}" == *"lucide-icons"* ]] && result+='<script>lucide.createIcons();</script>'
 		result+='</html>'
 		FictionResponse[meta]=''
 		FICTION_META=''
@@ -1342,10 +1341,11 @@ _modulesLoader() {
 }
 
 _pluginsLoader() {
-	for plugin in ${Fiction[plugins@v]//\'}; do
+	for plugin in ${Fiction[plugins]::3}; do
+		plugin="${Fiction[plugins.$plugin]}"
 			case "$plugin" in
 				"tailwindcss") FictionResponse[head]+='<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>' ;;
-				"lucide-icons") FictionResponse[head]+='<script src="https://unpkg.com/lucide@latest"></script>' ;;
+				#"lucide-icons") FictionResponse[head]+='<script src="https://unpkg.com/lucide@latest"></script>' ;;
 				"dom") subshell _dom_contents cat "$dom_path"; FictionResponse[head]+="<script>${_dom_contents}</script>" ;;
 			esac
 	done
