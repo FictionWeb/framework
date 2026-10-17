@@ -819,7 +819,7 @@ function fiction.worker() {
 				local post_data="";
 				case "${Fiction[body.$content_type]}" in
 					"{}"|"@A"*|true)
-						read -Nr "${FictionRequestHeaders["content-length"]}" post_data
+						read -r -N "${FictionRequestHeaders["content-length"]}" post_data
 						#post_data="${post_data%%$'\r'}"
 						post_data="${post_data%%$'\n\n'}"
 						FictionRequestBodyRaw="${post_data}"
