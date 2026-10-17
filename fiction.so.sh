@@ -1341,7 +1341,8 @@ _modulesLoader() {
 }
 
 _pluginsLoader() {
-	for plugin in ${Fiction[plugins]::3}; do
+	for plugin in ${Fiction[plugins]:3}; do
+		echo "$plugin"
 		plugin="${Fiction[plugins.$plugin]}"
 			case "$plugin" in
 				"tailwindcss") FictionResponse[head]+='<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>' ;;
