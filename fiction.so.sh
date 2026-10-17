@@ -218,13 +218,26 @@ function _spawn {
 					if (( ! is_zsh )); then
 						[ ! -f "${FictionModule[accept]}" ] && _error "\`accept\` is not found in ${Fiction[path]}" && return 1;
 						enable -f "${FictionModule[accept]}" accept;
+						local fds=() i=0
 						while true; do
 							accept -b "$address" -r REMOTE_ADDR -v worker_fd "$port" || break
-							uuidgen_to worker
-							time_ms
-							worker_init_time="$ms"
-							( fiction.worker "&${worker_fd}" "$worker" <&${worker_fd}; )
-                           	exec {worker_fd}>&-
+							fds+=("$worker_fd")
+							{ 
+								uuidgen_to worker
+								time_ms
+								worker_init_time="$ms"
+								fiction.worker "&${worker_fd}" "$worker" <&${worker_fd};
+							} &
+							((++i))
+							if (( i == 10 )); then
+                           		wait
+								for fd in "${fds[@]}"; do
+									echo "closing: $fd"
+									exec {fd}>&-
+								done
+								fds=()
+								i=0
+							fi
 							#exec {WORKER_FIFO}>&-;
 						done &
 					else
@@ -806,7 +819,7 @@ function fiction.worker() {
 				local post_data="";
 				case "${Fiction[body.$content_type]}" in
 					"{}"|"@A"*|true)
-						read -N "${FictionRequestHeaders["content-length"]}" post_data
+						read -Nr "${FictionRequestHeaders["content-length"]}" post_data
 						#post_data="${post_data%%$'\r'}"
 						post_data="${post_data%%$'\n\n'}"
 						FictionRequestBodyRaw="${post_data}"
